@@ -1,0 +1,2 @@
+dev.luxloader.core.runtime.FakeTestPlugin
+dev.luxloader.core.runtime.RecordingLifecyclePlugin

@@ -1,0 +1,15 @@
+// Optional development plugins built in their own repositories before runClient.
+// Pass -Pluxloader.pipelineJars=C:/plugins/one.jar,C:/plugins/two.jar.
+def suppliedJars = providers.gradleProperty('luxloader.pipelineJars').orElse('')
+def syncPipelinePlugins = tasks.register('syncPipelinePlugins', Copy) {
+    from(providers.provider {
+        suppliedJars.get().split(',').collect { it.trim() }.findAll { !it.isEmpty() }.collect { path ->
+            def artifact = rootProject.file(path)
+            if (!artifact.isFile()) throw new GradleException("Pipeline JAR does not exist: ${artifact}")
+            artifact
+        }
+    })
+    into(layout.projectDirectory.dir('run/luxloader/pipelines'))
+    doNotTrackState('The pipeline directory can contain user-managed plugins')
+}
+tasks.matching { it.name == 'runClient' }.configureEach { dependsOn syncPipelinePlugins }

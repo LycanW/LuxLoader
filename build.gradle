@@ -1,0 +1,60 @@
+plugins { id 'base' }
+ext {
+    lwjglVersion = providers.gradleProperty('lwjgl_version').get()
+    lwjglNatives = providers.gradleProperty('lwjgl_natives').get()
+    mcVersion = providers.gradleProperty('minecraft_version').get()
+}
+allprojects {
+    group = 'dev.luxloader'
+    version = providers.gradleProperty('luxloader_version').getOrElse('0.1.0')
+}
+subprojects {
+    apply plugin: 'java-library'
+    java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.compilerArgs << '-Xlint:-serial' << '-Xlint:-restricted'
+        // Avoid stale class analysis observed during API changes.
+        options.incremental = false
+    }
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+        systemProperty 'file.encoding', 'UTF-8'
+        // Legacy message assertions use Chinese fixtures; localization tests exercise both languages.
+        systemProperty 'luxloader.language', 'zh'
+        systemProperty 'luxloader.debug.frameGraph', 'true'
+        systemProperty 'luxloader.debug.vulkan', 'true'
+        systemProperty 'luxloader.test.diagnostics', 'true'
+        testLogging {
+            events 'passed', 'failed', 'skipped'
+            exceptionFormat = 'full'
+            showStandardStreams = true
+        }
+        // Gradle does not forward launcher properties to test JVMs automatically.
+        System.getProperties().each { key, value ->
+            if (key.toString().startsWith('luxloader.')) systemProperty key.toString(), value.toString()
+        }
+        jvmArgs '--enable-native-access=ALL-UNNAMED'
+    }
+    tasks.withType(Javadoc).configureEach {
+        options.encoding = 'UTF-8'
+        options.addStringOption('Xdoclint:none', '-quiet')
+    }
+    if (name in ['luxloader-api', 'luxloader-native', 'luxloader-core', 'luxloader-shader']) {
+        apply plugin: 'maven-publish'
+        java { withSourcesJar() }
+        publishing {
+            publications {
+                mavenJava(MavenPublication) {
+                    from components.java
+                    pom {
+                        name = project.name
+                        description = project.provider { project.description ?: project.name }
+                        licenses { license { name = 'MIT'; url = 'https://opensource.org/license/mit' } }
+                    }
+                }
+            }
+            repositories { maven { name = 'sdk'; url = rootProject.layout.buildDirectory.dir('sdk-repository') } }
+        }
+    }
+}

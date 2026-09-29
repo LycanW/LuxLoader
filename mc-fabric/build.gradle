@@ -1,0 +1,73 @@
+// Fabric client module. Minecraft 26.3 is unobfuscated: apply Loom through plugins {} and use standard implementation dependencies; mappings, modImplementation and refmaps are unnecessary.
+
+plugins {
+    id 'net.fabricmc.fabric-loom'
+}
+
+description = 'LuxLoader Fabric client integration.'
+
+// Force Vulkan through launch arguments; options.txt can normalize the backend back to OpenGL. Keep the test window at a stable 854x480 to distinguish resize handling from presentation bugs.
+loom {
+    runs {
+        client {
+            client()
+            programArgs '--graphicsBackend', 'vulkan'
+            programArgs '--width', '854', '--height', '480'
+            // Enable Vulkan creation tracing so native crashes leave progress evidence.
+            vmArgs '-Dluxloader.debug.vulkan=true'
+        }
+    }
+}
+
+// Shared UI uses only Minecraft classes and is compiled separately by each mod loader.
+sourceSets.main.java.srcDir '../mc-ui/src/main/java'
+
+// Shared mixins target Minecraft classes and need the game toolchain. Keep them out of the reflection-only adapter library. Both integrations use compatible Mixin tooling and official class names.
+sourceSets.main.java.srcDir '../mc-hooks/src/main/java'
+sourceSets.main.resources.srcDir '../mc-hooks/src/main/resources'
+
+apply from: rootProject.file('gradle/pipeline-plugins.gradle')
+
+repositories {
+    maven { name = 'FabricMC'; url = 'https://maven.fabricmc.net/' }
+    mavenCentral()
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
+
+    // Minecraft 26.3 uses standard implementation for Fabric Loader.
+    implementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
+
+    // Loader implementation modules.
+    implementation project(':luxloader-api')
+    implementation project(':luxloader-core')
+    implementation project(':luxloader-native')
+    implementation project(':mc-adapter')
+    // Shader compilation is available to plugins alongside precompiled SPIR-V.
+    implementation project(':luxloader-shader')
+
+    // Bundle loader modules through Fabric nested JARs.
+    include(project(':luxloader-api'))
+    include(project(':luxloader-core'))
+    include(project(':luxloader-native'))
+    include(project(':mc-adapter'))
+    include(project(':luxloader-shader'))
+}
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'LuxLoader (Fabric)',
+            'Implementation-Version': project.version
+        )
+    }
+}
+
+// UI regression tests use a callback instead of touching the real clipboard/game.
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly "org.lwjgl:lwjgl:${lwjglVersion}:${lwjglNatives}"
+}

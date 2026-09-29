@@ -1,0 +1,67 @@
+// NeoForge client integration. Events handle fallback lifecycle work; shared mixins still supply prepared-frame and presentation hooks. Minecraft 26.3 uses official unobfuscated names.
+
+plugins {
+    id 'net.neoforged.moddev'
+}
+
+description = 'LuxLoader NeoForge client integration.'
+
+// Shared UI is compiled against each mod toolchain.
+sourceSets.main.java.srcDir '../mc-ui/src/main/java'
+
+// Shared mixins require [[mixins]] entries in neoforge.mods.toml. Without registration they never load. Modern ModDevGradle and unobfuscated Minecraft require neither legacy processor setup nor refmaps.
+sourceSets.main.java.srcDir '../mc-hooks/src/main/java'
+sourceSets.main.resources.srcDir '../mc-hooks/src/main/resources'
+
+apply from: rootProject.file('gradle/pipeline-plugins.gradle')
+
+neoForge {
+    version = project.neoforge_version
+
+    // Explicitly register this source set or generated fml.modFolders stays empty and FML cannot discover the mod.
+    mods {
+        luxloader {
+            sourceSet sourceSets.main
+        }
+    }
+
+    // Development client configuration. Real launches validate reflective access to private device fields, which signature-only tests cannot prove.
+    runs {
+        client {
+            client()
+            // Force Vulkan via the launch argument; preferredGraphicsBackend in options.txt can fall back to OpenGL.
+            programArgument '--graphicsBackend'
+            programArgument 'vulkan'
+        }
+    }
+}
+
+repositories {
+    maven { name = 'NeoForged'; url = 'https://maven.neoforged.net/releases' }
+    mavenCentral()
+}
+
+dependencies {
+    // Bundle loader modules through NeoForge jarJar.
+    implementation project(':luxloader-api')
+    implementation project(':luxloader-core')
+    implementation project(':luxloader-native')
+    implementation project(':mc-adapter')
+    // Shader compilation is available to plugins alongside precompiled SPIR-V.
+    implementation project(':luxloader-shader')
+
+    jarJar(project(':luxloader-api'))
+    jarJar(project(':luxloader-core'))
+    jarJar(project(':luxloader-native'))
+    jarJar(project(':mc-adapter'))
+    jarJar(project(':luxloader-shader'))
+}
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'LuxLoader (NeoForge)',
+            'Implementation-Version': project.version
+        )
+    }
+}

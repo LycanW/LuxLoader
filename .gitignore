@@ -1,0 +1,33 @@
+# Generated files, local tools and private research notes.
+.gradle/
+build/
+out/
+run/
+.gradle-cache/
+*.log
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+nbproject/
+*.hprof
+run/config/luxloader/
+docs/generated/
+.tools/
+luxloader-shader/src/main/resources/native/
+docs/
+vkspec_raw/
+docs_spec_*.txt
+vpfx_*.json
+_research_src/
+.research/
+hs_err_pid*.log
+crash-*.txt
+replay_pid*.log
+
+# Local design and acceptance documents remain Chinese and are not published.
+PBR_REFERENCE.md
+PIPELINE_CONTRACT.md
+REMAINING_WORK.md

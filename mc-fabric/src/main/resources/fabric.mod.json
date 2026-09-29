@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "luxloader",
+  "version": "0.1.0",
+  "name": "LuxLoader",
+  "description": "Rendering pipeline loader for Minecraft Vulkan: registration, runtime switching, capability negotiation and diagnostics.",
+  "authors": [
+    "LuxLoader"
+  ],
+  "contact": {
+    "sources": "https://github.com/LycanW/LuxLoader",
+    "issues": "https://github.com/LycanW/LuxLoader/issues"
+  },
+  "license": "MIT",
+  "icon": "assets/luxloader/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.luxloader.mc.fabric.LuxLoaderFabricClient"
+    ]
+  },
+  "mixins": [
+    "luxloader.mixins.json",
+    "luxloader.hooks.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": ">=26.3",
+    "java": ">=25"
+  },
+  "custom": {
+    "luxloader:notes": [
+      "Vulkan is experimental since Minecraft 26.2 Snapshot 8; OpenGL is the default.",
+      "The loader remains idle on non-Vulkan backends. This is expected behavior.",
+      "Shared hooks integrate through FrontendGpuSurface. Observed capability checks detect unavailable hooks."
+    ]
+  }
+}

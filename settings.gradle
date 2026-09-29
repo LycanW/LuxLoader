@@ -1,0 +1,28 @@
+pluginManagement {
+    repositories {
+        maven { name = 'FabricMC'; url = 'https://maven.fabricmc.net/' }
+        maven { name = 'NeoForged'; url = 'https://maven.neoforged.net/releases' }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    plugins {
+        // Loom requires Gradle 9.5+; the wrapper pins 9.7.1.
+        id 'net.fabricmc.fabric-loom' version '1.17.19'
+        id 'net.neoforged.moddev' version '2.0.147'
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        maven { name = 'FabricMC'; url = 'https://maven.fabricmc.net/' }
+        maven { name = 'NeoForged'; url = 'https://maven.neoforged.net/releases' }
+    }
+}
+rootProject.name = 'LuxLoader'
+include 'luxloader-api', 'luxloader-native', 'luxloader-core', 'luxloader-shader'
+// Composite builds expose the SDK without resolving Minecraft toolchains.
+def sdkOnly = providers.gradleProperty('luxloader.sdkOnly')
+        .getOrElse(gradle.parent != null ? 'true' : 'false').toBoolean()
+if (!sdkOnly) { include 'mc-adapter', 'mc-fabric', 'mc-neoforge' }
+// mc-hooks and mc-ui are shared sources compiled by both mod modules.
+// Example pipelines are separate repositories consuming versioned SDK artifacts.

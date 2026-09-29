@@ -1,0 +1,35 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Plugin lifecycle, scheduling, capabilities, frame graphs and Vulkan resources.'
+
+dependencies {
+    api project(':luxloader-api')
+
+    // The FFM implementation supplies NativeBridge; plugins depend on the API contract.
+    implementation project(':luxloader-native')
+
+    // LWJGL provides Vulkan core and extension bindings. lwjgl-vulkan uses the system Vulkan loader and needs no separate native classifier on Windows.
+    implementation platform("org.lwjgl:lwjgl-bom:${lwjglVersion}")
+    implementation "org.lwjgl:lwjgl"
+    implementation "org.lwjgl:lwjgl-vulkan"
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly "org.lwjgl:lwjgl::${lwjglNatives}"
+
+    // GPU tests compile ray-query shaders. The production core artifact must not depend on the shader compiler.
+    testImplementation project(':luxloader-shader')
+}
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'LuxLoader Core',
+            'Implementation-Version': project.version,
+            'Automatic-Module-Name': 'dev.luxloader.core'
+        )
+    }
+}

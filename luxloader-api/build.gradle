@@ -1,0 +1,138 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Public GPU, pipeline, configuration and diagnostic contracts.'
+
+dependencies {
+    // Keep production dependencies limited to the JDK.
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'LuxLoader API',
+            'Implementation-Version': project.version,
+            'Automatic-Module-Name': 'dev.luxloader.api'
+        )
+    }
+}
+
+// Built-in shaders are compiled with slangc and checked in as SPIR-V. The API cannot depend on the shader compiler module. Run :luxloader-api:compileShaders only after changing src/main/slang; ordinary builds use the checked-in resources and do not require slangc.
+
+// Built-in shader sources.
+def slangSourceDir = layout.projectDirectory.dir('src/main/slang')
+
+// Checked-in compiled resources packaged in the JAR.
+def slangOutputDir = layout.projectDirectory.dir('src/main/resources/spirv')
+
+// All built-ins use compute stage and entry point main.
+def slangArgs = ['-target', 'spirv', '-profile', 'spirv_1_5', '-entry', 'main', '-stage', 'compute']
+
+// Find slangc in the download cache or bundled shader module resources. Return null for the caller to report installation instructions.
+def findSlangc = {
+    def names = ['slangc.exe', 'slangc']
+
+    // Official releases downloaded by fetchSlangc; .tools is ignored.
+    def cacheDir = rootProject.layout.projectDirectory.dir('.tools/slang-cache').asFile
+    if (cacheDir.isDirectory()) {
+        def unpacked = (cacheDir.listFiles() ?: [])
+                .findAll { it.isDirectory() && it.name.startsWith('unpacked-') }
+                .sort { it.name }
+        for (dir in unpacked) {
+            for (name in names) {
+                def candidate = new File(dir, "bin/${name}")
+                if (candidate.isFile()) {
+                    return candidate
+                }
+            }
+        }
+    }
+
+    // Bundled compiler resources from luxloader-shader.
+    def nativeRoot = rootProject.file('luxloader-shader/src/main/resources/native')
+    if (nativeRoot.isDirectory()) {
+        def platforms = (nativeRoot.listFiles() ?: []).findAll { it.isDirectory() }.sort { it.name }
+        for (platform in platforms) {
+            // Try available platform entries until a compiler is found.
+            for (name in names) {
+                def candidate = new File(platform, name)
+                if (candidate.isFile()) {
+                    return candidate
+                }
+            }
+        }
+    }
+
+    return null
+}
+
+tasks.register('compileShaders') {
+    group = 'build'
+    description = 'Regenerate checked-in SPIR-V from built-in Slang sources.'
+
+    inputs.dir(slangSourceDir)
+    outputs.dir(slangOutputDir)
+
+    doLast {
+        def slangc = findSlangc()
+        if (slangc == null) {
+            // Fail explicitly so checked-in SPIR-V cannot silently remain stale after source changes.
+            throw new GradleException("""
+                slangc was not found. To regenerate built-in SPIR-V, run:
+                    gradlew :luxloader-shader:fetchSlangc
+                Or extract an official Slang release to .tools/slang-cache/unpacked-<platform>/.
+                Searched .tools/slang-cache/unpacked-*/bin/slangc[.exe] and
+                luxloader-shader/src/main/resources/native/*/slangc[.exe].
+                Ordinary builds use checked-in SPIR-V and do not require this task.
+                """.stripIndent())
+        }
+
+        def sources = (slangSourceDir.asFile.listFiles() ?: [])
+                .findAll { it.isFile() && it.name.endsWith('.slang') }
+                .sort { it.name }
+        if (sources.isEmpty()) {
+            throw new GradleException("No .slang sources under ${slangSourceDir.asFile}")
+        }
+
+        if (!slangOutputDir.asFile.exists() && !slangOutputDir.asFile.mkdirs()) {
+            throw new GradleException("Cannot create output directory ${slangOutputDir.asFile}")
+        }
+
+        sources.each { source ->
+            def moduleName = source.name.replaceFirst(/\.slang$/, '')
+            def target = new File(slangOutputDir.asFile, "${moduleName}.spv")
+            def command = [slangc.absolutePath, source.absolutePath] + slangArgs + ['-o', target.absolutePath]
+
+            def execution = providers.exec {
+                commandLine command
+                workingDir source.parentFile
+                ignoreExitValue = true
+            }
+            def exitCode = execution.result.get().exitValue
+            def stdout = execution.standardOutput.asText.get()
+            def stderr = execution.standardError.asText.get()
+
+            if (exitCode != 0) {
+                throw new GradleException("slangc failed for ${source.name} (exit ${exitCode}):\n"
+                        + stdout + stderr)
+            }
+            // Expose compiler warnings: inferred Vulkan bindings can disagree with Java descriptor layouts.
+            def warnings = (stdout + stderr).trim()
+            if (!warnings.isEmpty()) {
+                logger.lifecycle("[${moduleName}] slangc output:\n${warnings}")
+            }
+
+            if (!target.isFile() || target.length() == 0L) {
+                throw new GradleException("slangc reported success but did not produce ${target.name}")
+            }
+            def bytes = target.bytes
+            def bound = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(12)
+            logger.lifecycle("  ${source.name} -> ${target.name}"
+                    + "  ${bytes.length} bytes / ${bytes.length / 4} words / bound=${bound}")
+        }
+    }
+}

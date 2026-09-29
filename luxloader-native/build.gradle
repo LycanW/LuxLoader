@@ -1,0 +1,32 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'JDK FFM native library bridge and reference C headers.'
+
+dependencies {
+    api project(':luxloader-api')
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Include reference C headers for native plugin authors.
+processResources {
+    from('src/main/c') {
+        into 'luxloader/native'
+        include '**/*.h'
+    }
+}
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'LuxLoader Native Bridge',
+            'Implementation-Version': project.version,
+            // Declare native access for current and future JDK requirements.
+            'Enable-Native-Access': 'ALL-UNNAMED'
+        )
+    }
+}

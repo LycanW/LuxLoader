@@ -1,0 +1,31 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Minecraft data extraction, rendering hooks and version-aware reflection.'
+
+dependencies {
+    api project(':luxloader-api')
+    implementation project(':luxloader-core')
+
+    // Provide LWJGL for reflection tests: resolving VulkanDevice member signatures loads VkDevice even without invoking methods. The game supplies these classes at runtime.
+    testImplementation platform("org.lwjgl:lwjgl-bom:${lwjglVersion}")
+    testImplementation "org.lwjgl:lwjgl"
+    testImplementation "org.lwjgl:lwjgl-vulkan"
+
+    // fastutil is also required when resolving all fields of VulkanGpuSurface, including LongList swapchain images. Missing dependencies must not masquerade as renamed fields. Match the Minecraft 26.3 version.
+    testImplementation 'it.unimi.dsi:fastutil:8.5.18'
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'LuxLoader Minecraft Bridge',
+            'Implementation-Version': project.version
+        )
+    }
+}
