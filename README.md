@@ -83,6 +83,8 @@ The comma-separated JAR list is copied into that module's run directory. Other i
 
 ## Buffer uploads
 
+Resource preparation uses bounded CPU workers, generation-aware task results and pipeline/plugin cancellation. Minecraft resource lookup and stream acquisition stay on the host thread; plugins own decoding. See the [resource processing contract](PLUGIN_DEVELOPMENT.md#resource-processing) for budgets, the legacy compatibility path and plan admission. Global resource invalidation is supported; dependency-specific invalidation is not yet implemented.
+
 Large buffer update batches use reusable, persistently mapped staging pages and GPU buffer copies. Each recording retains its own upload ranges until submission completion; host-owned recordings retire at the host's completed-frame boundary. Idle staging pages are cached up to 64 MiB. Small batches retain inline updates. Diagnostics under `upload.staging.*` expose allocation, reuse and copy counts.
 
 An explicit CPU recording benchmark is available with `.\gradlew :luxloader-core:test --tests '*VulkanUploadBenchmarkGpuTest' "-Dluxloader.test.gpuPipeline=true" "-Dluxloader.test.uploadBenchmark=true"`. It measures repeated 32 MiB batches with GPU completion outside the timed region; its results are not whole-frame timings.

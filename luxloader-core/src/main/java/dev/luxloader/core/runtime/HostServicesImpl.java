@@ -102,6 +102,12 @@ public final class HostServicesImpl implements HostServices {
             return dev.luxloader.api.scene.ResourceAccess.EMPTY;
         }
 
+        default dev.luxloader.api.resource.ResourcePreparationService resourcePreparation(long ownerInstanceToken) {
+            return dev.luxloader.api.resource.ResourcePreparationService.UNAVAILABLE;
+        }
+
+        default void releaseResourceOwner(long ownerInstanceToken) { }
+
         /** Returns the per-plugin-instance client state service. */
         default ClientStateService clientState(long ownerInstanceToken) {
             return ClientStateService.EMPTY;
@@ -165,6 +171,11 @@ public final class HostServicesImpl implements HostServices {
     public void deactivate() {
         if (active.compareAndSet(true, false) && runtime != null) {
             try {
+                runtime.releaseResourceOwner(instanceToken);
+            } catch (RuntimeException | LinkageError e) {
+                diagnostics.warn(tr("Failed to cancel resource preparation for plugin ") + ownerPluginId() + ": " + e);
+            }
+            try {
                 runtime.releaseClientStateOwner(instanceToken);
             } catch (RuntimeException e) {
                 diagnostics.warn("Failed to cancel client state subscriptions for plugin " + ownerPluginId() + ": " + e);
@@ -193,6 +204,14 @@ public final class HostServicesImpl implements HostServices {
     }
 
     @Override public dev.luxloader.api.scene.ResourceAccess resources() { return runtime.resources(); }
+
+    @Override public dev.luxloader.api.resource.ResourcePreparationService resourcePreparation() {
+        return () -> {
+            requireActive();
+            if (runtime == null) return dev.luxloader.api.resource.ResourcePreparationService.UNAVAILABLE.openScope();
+            return runtime.resourcePreparation(instanceToken).openScope();
+        };
+    }
 
     @Override public ClientStateService clientState() { return clientState; }
 

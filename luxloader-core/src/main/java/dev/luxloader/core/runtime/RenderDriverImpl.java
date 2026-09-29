@@ -143,6 +143,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
     private PluginLoader pluginLoader;
     private final ClientStateHub clientStateHub;
     private final ClientEventHub clientEventHub;
+    private final ResourcePreparationHub resourcePreparationHub;
 
     private final List<PipelinePlugin> plugins = new ArrayList<>();
     private final Map<String, HostServicesImpl> hostServices = new LinkedHashMap<>();
@@ -271,6 +272,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
                 ClientStateHub.DEFAULT_QUEUE_CAPACITY, this::reportClientStateListenerFailure);
         this.clientEventHub = new ClientEventHub(ClientEventHub.DEFAULT_QUEUE_CAPACITY,
                 this::reportClientEventListenerFailure);
+        this.resourcePreparationHub = new ResourcePreparationHub(this::resources);
     }
 
     private void reportClientStateListenerFailure(Throwable error) {
@@ -1119,6 +1121,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
      * cleanup there remain dependent on a correctly installed release hook.
      */
     private void abandonGpuObjects() {
+        resourcePreparationHub.closeScopes();
         activePipeline = null;
         activePipelineId = null;
         pipelineResources = null;
@@ -1126,6 +1129,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
 
     /** Closes the active pipeline and releases its scoped resources. */
     private void teardownActivePipeline() {
+        resourcePreparationHub.closeScopes();
         if (activePipeline != null) {
             try {
                 if (device != null) {
@@ -1695,6 +1699,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
             }
         } finally {
             // Always close the heartbeat handle so Windows permits truncation on the next run.
+            resourcePreparationHub.close();
             closeHeartbeat();
         }
     }
@@ -2168,6 +2173,14 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
         return hostAdapter == null ? dev.luxloader.api.scene.ResourceAccess.EMPTY : hostAdapter.resources();
     }
 
+    @Override public dev.luxloader.api.resource.ResourcePreparationService resourcePreparation(long ownerInstanceToken) {
+        return resourcePreparationHub.serviceForOwner(ownerInstanceToken);
+    }
+
+    @Override public void releaseResourceOwner(long ownerInstanceToken) {
+        resourcePreparationHub.releaseOwner(ownerInstanceToken);
+    }
+
     @Override
     public ClientStateService clientState(long ownerInstanceToken) {
         return clientStateHub.serviceForOwner(ownerInstanceToken);
@@ -2210,6 +2223,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
     public void observeClientStateSafePoint(boolean paused, long sessionGeneration,
             BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
         if (!initialized.get()) return;
+        resourcePreparationHub.worldSession(sessionGeneration);
         boolean eventDemand = clientEventHub.hasSubscribers();
         clientStateHub.safePoint(paused, sessionGeneration, snapshotFactory, eventDemand);
         clientEventHub.safePoint(clientStateHub.current().orElse(null), clientStateHub.captureFailureEpoch());
@@ -2268,6 +2282,19 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
         }
         try {
             processPendingActions();
+            resourcePreparationHub.refresh();
+            var resourceMetrics = resourcePreparationHub.metrics();
+            diagnostics.metric("resources.tasks.queued", resourceMetrics.queued(), "tasks");
+            diagnostics.metric("resources.tasks.running", resourceMetrics.running(), "tasks");
+            diagnostics.metric("resources.tasks.cancelled", resourceMetrics.cancelled(), "tasks");
+            diagnostics.metric("resources.tasks.rejected", resourceMetrics.rejected(), "tasks");
+            diagnostics.metric("resources.tasks.failed", resourceMetrics.failed(), "tasks");
+            diagnostics.metric("resources.streams.cleanup-failed", resourceMetrics.streamCleanupFailures(), "streams");
+            diagnostics.metric("resources.bytes.read", resourceMetrics.inputBytesRead(), "bytes");
+            diagnostics.metric("resources.bytes.largest-file", resourceMetrics.largestFileBytes(), "bytes");
+            diagnostics.metric("resources.bytes.decoded", resourceMetrics.decodedBytes(), "bytes");
+            diagnostics.metric("resources.bytes.decoded-peak", resourceMetrics.peakDecodedBytes(), "bytes");
+            diagnostics.metric("resources.bytes.input-peak", resourceMetrics.peakInputBytes(), "bytes");
             if (hostAdapter != null && activePipeline != null) {
                 long revision = hostAdapter.resources().revision();
                 if (revision != sceneResourceRevision) {

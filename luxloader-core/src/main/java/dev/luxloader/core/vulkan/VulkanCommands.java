@@ -204,6 +204,37 @@ public final class VulkanCommands implements GpuCommands, AutoCloseable {
         return hostAllocate != null;
     }
 
+    @Override public boolean supportsPreparationSubmission() { return hostAllocate == null; }
+
+    @Override public void completePreparation(GpuQueue queue) {
+        if (hostAllocate != null) throw new IllegalStateException("Preparation cannot submit inside a host frame");
+        // Publication correctness cannot depend on deduplicated diagnostic messages.
+        if (recorded.stream().anyMatch(buffer -> !buffer.hasEnded())) {
+            discardPendingRecordings();
+            throw new IllegalStateException(tr("Preparation contains an unfinished recording"));
+        }
+        if (recorded.isEmpty()) return;
+        java.util.Objects.requireNonNull(queue, "queue");
+        var batch = new ArrayList<>(recorded);
+        long fence = acquireFreeFence();
+        if (fence == 0L) {
+            discardPendingRecordings();
+            throw new IllegalStateException(tr("Preparation completion fence is unavailable"));
+        }
+        recorded.clear();
+        int reset = vkResetFences(device.vkDevice(), fence);
+        if (reset != VK_SUCCESS) {
+            freeBatch(batch);
+            releaseFreeFence(fence);
+            throw new IllegalStateException(tr("Preparation fence reset failed: ") + VulkanDevice.resultName(reset));
+        }
+        PreparationSubmission.complete(
+                () -> submitWithFence(queue, new ArrayList<>(batch), List.of(), List.of(), fence),
+                () -> vkWaitForFences(device.vkDevice(), fence, true, Long.MAX_VALUE),
+                () -> { freeBatch(batch); releaseFreeFence(fence); },
+                () -> unconfirmedPreparationBatches.add(new PendingSubmission(batch, fence)));
+    }
+
     /** Command buffer reclamation failures for diagnostics. */
     private final List<String> recyclingFailures = new ArrayList<>();
 
@@ -428,6 +459,9 @@ public final class VulkanCommands implements GpuCommands, AutoCloseable {
     }
 
     private final List<PendingSubmission> pendingSubmissions = new ArrayList<>();
+    // An exception before native submission can leave an unsignaled fence forever. Never drain
+    // these as successful submissions. The device's eventual destruction owns their native storage.
+    private final List<PendingSubmission> unconfirmedPreparationBatches = new ArrayList<>();
 
     /**
      * Submits without waiting or reclaiming so graphics/compute batches may overlap. Drain all submissions

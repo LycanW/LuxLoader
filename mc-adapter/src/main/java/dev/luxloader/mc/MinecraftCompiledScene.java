@@ -33,6 +33,8 @@ public final class MinecraftCompiledScene implements SceneGeometryFeed {
     private final java.util.ArrayDeque<Change> changes = new java.util.ArrayDeque<>();
     private long changeBytes;
     private long revision;
+    private final java.util.Set<Long> resourceRebuildSections = new java.util.HashSet<>();
+    private final java.util.Set<Long> incompleteSections = new java.util.HashSet<>();
     private Snapshot cached = new Snapshot(0L, List.of());
 
     private record Change(long revision, String id, CompiledSceneMesh mesh, boolean reset) { }
@@ -65,11 +67,20 @@ public final class MinecraftCompiledScene implements SceneGeometryFeed {
 
     /** Commit a complete section only when Minecraft adopts that mesh for drawing. */
     public synchronized void acceptSection(long sectionNode, Object generation) {
-        if (generation == null || generations.get(sectionNode) == generation) return;
+        acceptSection(sectionNode, generation, null);
+    }
+
+    /** Production capture supplies the exact nonempty layers adopted by the host. */
+    public synchronized void acceptSection(long sectionNode, Object generation, java.util.Set<String> expectedLayers) {
+        if (generation == null || generations.get(sectionNode) == generation && !incompleteSections.contains(sectionNode)) return;
         Pending candidate = pending.get(sectionNode);
         Map<String, CompiledSceneMesh> next = candidate != null
                 && candidate.generation() == generation
                 ? candidate.layers() : Map.of();
+        if (expectedLayers != null && !next.keySet().containsAll(expectedLayers)) {
+            incompleteSections.add(sectionNode);
+            return;
+        }
         if (candidate != null && candidate.generation() == generation) {
             pending.remove(sectionNode);
         }
@@ -91,15 +102,39 @@ public final class MinecraftCompiledScene implements SceneGeometryFeed {
             }
         }
         generations.put(sectionNode, generation);
+        resourceRebuildSections.remove(sectionNode);
+        incompleteSections.remove(sectionNode);
+    }
+
+    public synchronized void captureIncomplete(long sectionNode) { incompleteSections.add(sectionNode); }
+
+    /** Keep the host path until every previously accepted section is rebuilt or removed. */
+    public synchronized void resourceReloadStarted() {
+        resourceRebuildSections.addAll(generations.keySet());
+        resourceRebuildSections.addAll(sections.keySet());
+        resourceRebuildSections.addAll(incompleteSections);
+        incompleteSections.clear();
+        sections.clear(); generations.clear(); pending.clear();
+        record(null, null, true);
+    }
+
+    @Override public synchronized java.util.OptionalLong resourceGeneration() {
+        var state = MinecraftResourceAccess.currentState();
+        return java.util.OptionalLong.of(state.ready() && resourceRebuildSections.isEmpty() && incompleteSections.isEmpty()
+                ? state.generation() : Long.MIN_VALUE);
     }
 
     public synchronized void removeSection(long sectionNode) {
         removeLayers(sectionNode);
         generations.remove(sectionNode);
         pending.remove(sectionNode);
+        resourceRebuildSections.remove(sectionNode);
+        incompleteSections.remove(sectionNode);
     }
 
     public synchronized void clear() {
+        resourceRebuildSections.clear();
+        incompleteSections.clear();
         if (!sections.isEmpty() || !generations.isEmpty() || !pending.isEmpty()) {
             sections.clear();
             generations.clear();

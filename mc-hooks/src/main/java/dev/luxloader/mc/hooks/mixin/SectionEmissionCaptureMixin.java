@@ -20,8 +20,15 @@ public class SectionEmissionCaptureMixin {
     private SectionCompiler.Results luxloader$scopeEmission(SectionPos pos, RenderSectionRegion region,
             VertexSorting sorting, SectionBufferBuilderPack buffers, Operation<SectionCompiler.Results> original) {
         Float previous = EmissionCapture.CURRENT.get();
+        var resourceState = dev.luxloader.mc.MinecraftResourceAccess.currentState();
         EmissionCapture.CURRENT.set(0f);
-        try { return original.call(pos, region, sorting, buffers); }
+        try {
+            var result = original.call(pos, region, sorting, buffers);
+            ((dev.luxloader.mc.hooks.SectionResourceGeneration)(Object) result).luxloader$resourceGeneration(
+                    resourceState.ready() && resourceState.equals(dev.luxloader.mc.MinecraftResourceAccess.currentState())
+                            ? resourceState.generation() : Long.MIN_VALUE);
+            return result;
+        }
         finally {
             if (previous == null) EmissionCapture.CURRENT.remove();
             else EmissionCapture.CURRENT.set(previous);

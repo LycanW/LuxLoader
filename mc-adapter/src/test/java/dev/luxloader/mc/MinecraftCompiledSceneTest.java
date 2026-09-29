@@ -12,6 +12,63 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MinecraftCompiledSceneTest {
 
+    @Test void lateCaptureOfPreviouslyUnknownSectionKeepsHostPathUntilRebuildOrRemoval() {
+        var scene = new MinecraftCompiledScene();
+        scene.resourceReloadStarted();
+        long current = MinecraftResourceAccess.currentState().generation();
+        assertEquals(current, scene.resourceGeneration().orElseThrow());
+        scene.captureIncomplete(90);
+        assertEquals(Long.MIN_VALUE, scene.resourceGeneration().orElseThrow());
+        Object replacement = new Object();
+        scene.publish(90, "SOLID", mesh("late-replacement"), replacement);
+        scene.acceptSection(90, replacement, java.util.Set.of("SOLID"));
+        assertEquals(current, scene.resourceGeneration().orElseThrow());
+        scene.captureIncomplete(100);
+        assertEquals(Long.MIN_VALUE, scene.resourceGeneration().orElseThrow());
+        scene.removeSection(100);
+        assertEquals(current, scene.resourceGeneration().orElseThrow());
+    }
+
+    @Test void missingOrPartialCaptureCannotMakeTheFeedReadyButTrueEmptyAndHealthyReplacementCan() {
+        var scene = new MinecraftCompiledScene();
+        Object missing = new Object();
+        scene.acceptSection(10, missing, java.util.Set.of("SOLID"));
+        assertEquals(Long.MIN_VALUE, scene.resourceGeneration().orElseThrow());
+        assertTrue(scene.snapshot().meshes().isEmpty());
+        Object partial = new Object();
+        scene.publish(10,"SOLID",mesh("solid"),partial);
+        scene.acceptSection(10,partial,java.util.Set.of("SOLID","CUTOUT"));
+        assertEquals(Long.MIN_VALUE,scene.resourceGeneration().orElseThrow());
+        assertTrue(scene.snapshot().meshes().isEmpty());
+        scene.publish(10,"CUTOUT",mesh("cutout"),partial);
+        scene.acceptSection(10,partial,java.util.Set.of("SOLID","CUTOUT"));
+        assertEquals(2,scene.snapshot().meshes().size());
+        assertEquals(MinecraftResourceAccess.currentState().generation(),scene.resourceGeneration().orElseThrow());
+        scene.acceptSection(10,partial,java.util.Set.of("SOLID","CUTOUT"));
+        assertEquals(MinecraftResourceAccess.currentState().generation(),scene.resourceGeneration().orElseThrow());
+        scene.resourceReloadStarted();
+        scene.acceptSection(10,new Object(),java.util.Set.of());
+        assertTrue(scene.snapshot().meshes().isEmpty());
+        assertEquals(MinecraftResourceAccess.currentState().generation(),scene.resourceGeneration().orElseThrow());
+    }
+
+    @Test void resourceRebuildRequiresEveryPreviouslyAcceptedSectionOrAnExplicitRemoval() {
+        var scene = new MinecraftCompiledScene();
+        Object first = new Object(), second = new Object();
+        scene.publish(10, "SOLID", mesh("first"), first); scene.acceptSection(10, first);
+        scene.publish(20, "SOLID", mesh("second"), second); scene.acceptSection(20, second);
+        long cursor = scene.revision(); scene.resourceReloadStarted();
+        assertTrue(scene.changesSince(cursor).reset()); assertTrue(scene.snapshot().meshes().isEmpty());
+        assertEquals(Long.MIN_VALUE, scene.resourceGeneration().orElseThrow());
+        Object replacement = new Object();
+        scene.publish(10, "SOLID", mesh("new"), replacement); scene.acceptSection(10, replacement);
+        assertEquals(Long.MIN_VALUE, scene.resourceGeneration().orElseThrow());
+        scene.removeSection(20);
+        assertEquals(MinecraftResourceAccess.currentState().generation(), scene.resourceGeneration().orElseThrow());
+        scene.resourceReloadStarted(); scene.clear();
+        assertEquals(MinecraftResourceAccess.currentState().generation(), scene.resourceGeneration().orElseThrow());
+    }
+
     private static CompiledSceneMesh mesh(String id) {
         return new CompiledSceneMesh(id, MeshChunk.Kind.TERRAIN_OPAQUE, 0, 0, 0, 12,
                 List.of(new CompiledSceneMesh.Attribute("Position", 0, "RGB32_FLOAT")),

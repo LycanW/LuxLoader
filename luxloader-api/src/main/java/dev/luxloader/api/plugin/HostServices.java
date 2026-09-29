@@ -57,6 +57,11 @@ public interface HostServices {
         return dev.luxloader.api.scene.ResourceAccess.EMPTY;
     }
 
+    /** Bounded resource preparation scoped to this exact plugin instance. */
+    default dev.luxloader.api.resource.ResourcePreparationService resourcePreparation() {
+        return dev.luxloader.api.resource.ResourcePreparationService.UNAVAILABLE;
+    }
+
     /** Environment and local-player observations owned by this plugin instance. */
     default ClientStateService clientState() {
         return ClientStateService.EMPTY;

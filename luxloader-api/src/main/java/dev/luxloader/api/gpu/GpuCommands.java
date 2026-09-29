@@ -15,6 +15,18 @@ import java.util.function.Consumer;
  */
 public interface GpuCommands {
 
+    /** Whether standalone preparation can be submitted before the host freezes its world plan. */
+    default boolean supportsPreparationSubmission() { return false; }
+
+    /**
+     * Submit and confirm completion of pending preparation commands before selecting a world plan.
+     * Illegal inside a host-owned frame encoder. Intended for resource generation publication, not
+     * ordinary per-frame updates. Returning means GPU completion was proved, not merely recorded.
+     */
+    default void completePreparation(GpuQueue queue) {
+        throw new UnsupportedOperationException("Standalone preparation submission unavailable");
+    }
+
     /** CPU-visible bytes copied from mip zero, layer zero of a single-sample color image. */
     record ImageReadback(GpuFormat format, int width, int height, int rowStride,
                          String byteOrder, String payloadLayout, byte[] data) {

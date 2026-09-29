@@ -16,6 +16,7 @@
     "SecondaryEntityStateMixin",
     "SecondaryEntityExtractionMixin",
     "SectionEmissionCaptureMixin",
+    "SectionResourceGenerationMixin",
     "VertexEmissionMixin",
     "MeshEmissionMixin",
     "CompiledEmissionMixin",

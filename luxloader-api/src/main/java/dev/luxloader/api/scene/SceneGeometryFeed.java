@@ -8,4 +8,10 @@ package dev.luxloader.api.scene;
 @FunctionalInterface
 public interface SceneGeometryFeed {
     SceneGeometryDelta changesSince(long revision);
+
+    /**
+     * Resource generation of the complete current feed, when the host can prove it.
+     * A negative value means resource rebuild is incomplete. Legacy feeds return empty.
+     */
+    default java.util.OptionalLong resourceGeneration() { return java.util.OptionalLong.empty(); }
 }

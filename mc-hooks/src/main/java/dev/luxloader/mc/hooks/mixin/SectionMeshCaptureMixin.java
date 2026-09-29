@@ -36,6 +36,9 @@ public class SectionMeshCaptureMixin {
             return;
         }
         try {
+            var state = dev.luxloader.mc.MinecraftResourceAccess.currentState();
+            if (!state.ready() || ((dev.luxloader.mc.hooks.SectionResourceGeneration) compiled)
+                    .luxloader$resourceGeneration() != state.generation()) return;
             SectionMesh.SectionDraw draw = compiled.getSectionDraw(layer);
             if (draw == null) {
                 return;
@@ -86,7 +89,32 @@ public class SectionMeshCaptureMixin {
     private void luxloader$acceptSection(SectionMesh accepted,
             CallbackInfoReturnable<SectionMesh> cir) {
         long node = ((SectionRenderDispatcher.RenderSection) (Object) this).getSectionNode();
-        MinecraftCompiledScene.instance().acceptSection(node, accepted);
+        var state = dev.luxloader.mc.MinecraftResourceAccess.currentState();
+        if (!state.ready() || accepted instanceof dev.luxloader.mc.hooks.SectionResourceGeneration tagged
+                && tagged.luxloader$resourceGeneration() != state.generation()) {
+            // A late compile may belong to a newly visible section absent from the reload barrier.
+            // Keep host terrain until that section is rebuilt or removed as well.
+            MinecraftCompiledScene.instance().captureIncomplete(node);
+            return;
+        }
+        try {
+            var expected = new java.util.HashSet<String>();
+            for (ChunkSectionLayer layer : ChunkSectionLayer.values()) {
+                var draw = accepted.getSectionDraw(layer);
+                if (draw != null && draw.indexCount() > 0) expected.add(layer.name());
+            }
+            if (!expected.isEmpty() && !(accepted instanceof dev.luxloader.mc.hooks.SectionResourceGeneration)) {
+                MinecraftCompiledScene.instance().captureIncomplete(node);
+                return;
+            }
+            MinecraftCompiledScene.instance().acceptSection(node, accepted, expected);
+        } catch (RuntimeException | LinkageError failure) {
+            MinecraftCompiledScene.instance().captureIncomplete(node);
+            if (!captureFailureReported) {
+                captureFailureReported = true;
+                System.err.println(tr("[LuxLoader] Could not capture compiled section mesh: ") + failure);
+            }
+        }
     }
 
     @Inject(method = "reset", at = @At("HEAD"), require = 0)
