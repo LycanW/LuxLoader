@@ -6,6 +6,7 @@ import dev.luxloader.api.scene.CompiledSceneMesh;
 import dev.luxloader.api.scene.DynamicSceneMesh;
 import dev.luxloader.api.scene.SceneImage;
 import dev.luxloader.api.scene.SceneSnapshot;
+import dev.luxloader.api.state.ClientStateSnapshot;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -122,6 +123,42 @@ class PluginLifecycleCleanupTest {
     }
 
     @Test
+    @DisplayName("Reload Cancels Only The Replaced Client State Owner")
+    void reloadCancelsOnlyTheReplacedClientStateOwner() {
+        RecordingLifecyclePlugin.subscribeToClientStateOnLoad = true;
+        initializeDriver();
+
+        String oldId = recordingPluginIds().get(0);
+        RecordingLifecyclePlugin oldPlugin = instance(oldId);
+        var oldSubscription = oldPlugin.clientStateSubscription();
+        assertTrue(oldSubscription != null && !oldSubscription.isCancelled());
+        driver.observeClientStateSafePoint(false, 1L, PluginLifecycleCleanupTest::stateSample);
+        assertEquals(1, oldPlugin.clientStateBatches().size());
+        assertTrue(oldPlugin.clientStateBatches().getFirst().initial());
+
+        driver.reload("client state owner reload");
+
+        String newId = recordingPluginIds().get(0);
+        RecordingLifecyclePlugin newPlugin = instance(newId);
+        var newSubscription = newPlugin.clientStateSubscription();
+        assertTrue(oldSubscription.isCancelled(), "Reload must invalidate old state subscriptions");
+        assertTrue(newSubscription != null && !newSubscription.isCancelled());
+        assertThrows(IllegalStateException.class,
+                () -> oldPlugin.host().clientState().subscribe(batch -> fail("stale owner must be rejected")));
+        assertFalse(oldSubscription.cancel(), "Cancelling an already invalidated handle is idempotent");
+        assertFalse(newSubscription.isCancelled(), "An old handle cannot cancel the replacement owner's subscription");
+
+        driver.observeClientStateSafePoint(false, 1L, PluginLifecycleCleanupTest::stateSample);
+        assertEquals(1, oldPlugin.clientStateBatches().size(), "The replaced owner must receive no later state");
+        assertEquals(1, newPlugin.clientStateBatches().size(), "The new owner receives its own initial boundary");
+        assertTrue(newPlugin.clientStateBatches().getFirst().initial());
+
+        driver.close();
+        assertTrue(newSubscription.isCancelled(), "Close must release the live owner's subscription");
+        driver = null;
+    }
+
+    @Test
     @DisplayName("Unload Failure Does Not Block Other Plugins")
     void unloadFailureDoesNotBlockOtherPlugins() {
         initializeDriver();
@@ -171,6 +208,7 @@ class PluginLifecycleCleanupTest {
     @Test
     @DisplayName("Failed onLoad Is Rolled Back Immediately")
     void failedOnLoadIsRolledBackImmediately() {
+        RecordingLifecyclePlugin.subscribeToClientStateOnLoad = true;
         RecordingLifecyclePlugin.armNextLoadFailure();
 
         initializeDriver();
@@ -190,6 +228,8 @@ class PluginLifecycleCleanupTest {
                         + recordingPluginIds());
         assertTrue(plugin.unloaded(),
                 "A failed load must release its resources immediately, not when the loader closes");
+        assertTrue(plugin.clientStateSubscription().isCancelled(),
+                "A failed onLoad must cancel its state subscription during rollback");
         assertEquals(1, plugin.unloadCount(), "A failed load must unload exactly once");
         assertTrue(driver.pipelines().stream().map(info -> info.id()).noneMatch(plugin.pipelineId()::equals),
                 "A pipeline from a failed instance must not stay registered: " + driver.pipelines());
@@ -561,5 +601,18 @@ class PluginLifecycleCleanupTest {
         SceneImage image = new SceneImage(name, dev.luxloader.api.gpu.ImageHandle.vkImage(0x1234L, name),
                 dev.luxloader.api.gpu.GpuFormat.R8G8B8A8_UNORM, 16, 16);
         return new DynamicSceneMesh(mesh, image, 0.5f);
+    }
+
+    private static ClientStateSnapshot stateSample(long sequence, ClientStateSnapshot.LogicalTime time) {
+        var world = new ClientStateSnapshot.WorldSession(1L, true, "minecraft:overworld");
+        var environment = new ClientStateSnapshot.Environment(true, "minecraft:overworld", 6000L,
+                0f, 0f, ClientStateSnapshot.BiomeSample.UNAVAILABLE);
+        var identity = new ClientStateSnapshot.EntityIdentity(1L, 4,
+                "a32e1a6a-1f85-4ab4-96f0-64d2162611fa", 1L);
+        var player = new ClientStateSnapshot.Player(true, identity, 0d, 64d, 0d, 0f, 0f,
+                0d, 0d, 0d, true, false, false, false, false,
+                ClientStateSnapshot.Pose.STANDING, false, 0f, 0f, false, -1,
+                ClientStateSnapshot.ItemDescription.EMPTY, ClientStateSnapshot.ItemDescription.EMPTY);
+        return new ClientStateSnapshot(sequence, time, world, environment, player);
     }
 }

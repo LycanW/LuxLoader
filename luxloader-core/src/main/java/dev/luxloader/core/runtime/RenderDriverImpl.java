@@ -26,6 +26,8 @@ import dev.luxloader.api.pipeline.PipelineDescriptor;
 import dev.luxloader.api.pipeline.PipelineSettings;
 import dev.luxloader.api.pipeline.RenderContext;
 import dev.luxloader.api.pipeline.RenderPipeline;
+import dev.luxloader.api.state.ClientStateService;
+import dev.luxloader.api.state.ClientStateSnapshot;
 import dev.luxloader.api.pipeline.Requirements;
 import dev.luxloader.api.plugin.PipelineInfo;
 import dev.luxloader.api.plugin.PipelinePlugin;
@@ -55,6 +57,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiFunction;
 
 /**
  * Coordinates configuration, capabilities, plugins, pipelines and devices. Initialize
@@ -135,6 +138,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
     private FfmNativeBridge nativeBridge;
     private VulkanDispatchImpl vulkanDispatch;
     private PluginLoader pluginLoader;
+    private final ClientStateHub clientStateHub;
 
     private final List<PipelinePlugin> plugins = new ArrayList<>();
     private final Map<String, HostServicesImpl> hostServices = new LinkedHashMap<>();
@@ -259,6 +263,15 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
         this.contentDirectory = contentDirectory != null
                 ? contentDirectory.toAbsolutePath()
                 : inferContentDirectory(this.configDirectory);
+        this.clientStateHub = new ClientStateHub(System::nanoTime,
+                ClientStateHub.DEFAULT_QUEUE_CAPACITY, this::reportClientStateListenerFailure);
+    }
+
+    private void reportClientStateListenerFailure(Throwable error) {
+        DiagnosticsImpl current = diagnostics;
+        if (current != null) {
+            current.warn(tr("Client state stream processing failed: ") + error);
+        }
     }
 
     /**
@@ -2142,6 +2155,38 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
 
     @Override public dev.luxloader.api.scene.ResourceAccess resources() {
         return hostAdapter == null ? dev.luxloader.api.scene.ResourceAccess.EMPTY : hostAdapter.resources();
+    }
+
+    @Override
+    public ClientStateService clientState(long ownerInstanceToken) {
+        return clientStateHub.serviceForOwner(ownerInstanceToken);
+    }
+
+    @Override
+    public void releaseClientStateOwner(long ownerInstanceToken) {
+        clientStateHub.releaseOwner(ownerInstanceToken);
+    }
+
+    /** Whether any active plugin needs state payloads from the client tick hook. */
+    public boolean hasClientStateSubscribers() {
+        return initialized.get() && clientStateHub.hasSubscribers();
+    }
+
+    /** Whether the safe point needs to capture an initial or session-boundary sample. */
+    public boolean needsClientStateSnapshot() {
+        return initialized.get() && clientStateHub.needsInitialSnapshot();
+    }
+
+    /** Capture immutable facts only; plugin callbacks are deferred to the matching safe point. */
+    public void observeClientStateTick(boolean paused,
+            BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
+        if (initialized.get()) clientStateHub.clientTick(paused, snapshotFactory);
+    }
+
+    /** Observe the session/pause boundary and dispatch queued batches on the client update thread. */
+    public void observeClientStateSafePoint(boolean paused, long sessionGeneration,
+            BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
+        if (initialized.get()) clientStateHub.safePoint(paused, sessionGeneration, snapshotFactory);
     }
 
     /**

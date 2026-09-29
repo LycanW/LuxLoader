@@ -10,6 +10,7 @@ import dev.luxloader.api.nativebridge.NativeBridge;
 import dev.luxloader.api.pipeline.PipelineDescriptor;
 import dev.luxloader.api.pipeline.PipelineSettings;
 import dev.luxloader.api.pipeline.RenderPipeline;
+import dev.luxloader.api.state.ClientStateService;
 
 import java.util.List;
 import java.util.function.Supplier;
@@ -53,6 +54,11 @@ public interface HostServices {
 
     default dev.luxloader.api.scene.ResourceAccess resources() {
         return dev.luxloader.api.scene.ResourceAccess.EMPTY;
+    }
+
+    /** Environment and local-player observations owned by this plugin instance. */
+    default ClientStateService clientState() {
+        return ClientStateService.EMPTY;
     }
 
     /** Plugin metadata. */

@@ -8,6 +8,7 @@ import dev.luxloader.api.plugin.RenderDriver;
 import dev.luxloader.core.runtime.RenderDriverImpl;
 import dev.luxloader.api.host.HostAdapter;
 import dev.luxloader.mc.MinecraftBridge;
+import dev.luxloader.mc.MinecraftClientStateAccess;
 import dev.luxloader.mc.MinecraftGraphicsAccess;
 import dev.luxloader.mc.MinecraftHostAdapter;
 import dev.luxloader.mc.hooks.RenderHookHost;
@@ -42,6 +43,8 @@ public final class LuxLoaderFabricClient implements ClientModInitializer, Render
     private static RenderDriverImpl driver;
     private static MinecraftBridge bridge;
     private static MinecraftHostAdapter hostAdapter;
+    private static MinecraftClientStateAccess clientStateAccess;
+    private static boolean clientStateAccessWarningLogged;
     private static boolean vulkanBackend;
     private static String gameVersion = "";
 
@@ -64,6 +67,56 @@ public final class LuxLoaderFabricClient implements ClientModInitializer, Render
 
     /** Cache verbose logging before loader initialization for host probes. */
     private static boolean verbose;
+
+    @Override
+    public void onClientTick(Object minecraft) {
+        RenderDriverImpl current = driver;
+        if (current == null || !current.isInitialized()) return;
+        try {
+            MinecraftClientStateAccess access = clientStateAccess(minecraft);
+            boolean paused = access.isPaused(minecraft);
+            current.observeClientStateTick(paused, (sequence, time) -> sample(access, minecraft, sequence, time));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            warnClientStateAccess(e);
+        }
+    }
+
+    @Override
+    public void onClientSafePoint(Object minecraft) {
+        RenderDriverImpl current = driver;
+        if (current == null || !current.isInitialized()) return;
+        try {
+            MinecraftClientStateAccess access = clientStateAccess(minecraft);
+            long sessionGeneration = access.observeSessionGeneration(minecraft);
+            current.observeClientStateSafePoint(access.isPaused(minecraft), sessionGeneration,
+                    (sequence, time) -> sample(access, minecraft, sequence, time));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            warnClientStateAccess(e);
+        }
+    }
+
+    private static synchronized MinecraftClientStateAccess clientStateAccess(Object minecraft)
+            throws ReflectiveOperationException {
+        if (clientStateAccess == null) {
+            clientStateAccess = new MinecraftClientStateAccess(minecraft.getClass().getClassLoader());
+        }
+        return clientStateAccess;
+    }
+
+    private static dev.luxloader.api.state.ClientStateSnapshot sample(MinecraftClientStateAccess access,
+            Object minecraft, long sequence, dev.luxloader.api.state.ClientStateSnapshot.LogicalTime time) {
+        try {
+            return access.sample(minecraft, sequence, time);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            throw new IllegalStateException("Minecraft client state capture failed", e);
+        }
+    }
+
+    private static synchronized void warnClientStateAccess(Throwable error) {
+        if (clientStateAccessWarningLogged) return;
+        clientStateAccessWarningLogged = true;
+        LOGGER.warn(tr("Client state integration is unavailable; observations will be skipped"), error);
+    }
 
     @Override
     public void onInitializeClient() {

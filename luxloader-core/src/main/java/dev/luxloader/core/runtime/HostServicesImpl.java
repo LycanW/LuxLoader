@@ -13,6 +13,10 @@ import dev.luxloader.api.pipeline.PipelineDescriptor;
 import dev.luxloader.api.pipeline.PipelineSettings;
 import dev.luxloader.api.pipeline.RenderPipeline;
 import dev.luxloader.api.plugin.HostServices;
+import dev.luxloader.api.state.ClientStateBatch;
+import dev.luxloader.api.state.ClientStateService;
+import dev.luxloader.api.state.ClientStateSnapshot;
+import dev.luxloader.api.state.ClientStateSubscription;
 import dev.luxloader.api.config.ConfigView;
 import dev.luxloader.core.capability.CapabilityRegistryImpl;
 import dev.luxloader.core.diag.DiagnosticsImpl;
@@ -22,7 +26,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
 
 /**
  * Plugin-facing HostServices implementation. Validate conflicts/descriptors/requirements during
@@ -37,6 +43,8 @@ import java.util.function.Supplier;
  */
 public final class HostServicesImpl implements HostServices {
 
+    private static final AtomicLong NEXT_INSTANCE_TOKEN = new AtomicLong();
+
     /** Registered descriptor, factory and provider plugin. */
     public record Registration(
             GpuId id,
@@ -50,6 +58,8 @@ public final class HostServicesImpl implements HostServices {
     private final Diagnostics diagnostics;
     private final NativeBridge nativeBridge;
     private final RuntimeContext runtime;
+    private final long instanceToken = NEXT_INSTANCE_TOKEN.incrementAndGet();
+    private final ClientStateService clientState;
 
     /**
      * Whether this instance still owns its registrations. Offline construction without a runtime
@@ -83,6 +93,15 @@ public final class HostServicesImpl implements HostServices {
         default dev.luxloader.api.scene.ResourceAccess resources() {
             return dev.luxloader.api.scene.ResourceAccess.EMPTY;
         }
+
+        /** Returns the per-plugin-instance client state service. */
+        default ClientStateService clientState(long ownerInstanceToken) {
+            return ClientStateService.EMPTY;
+        }
+
+        /** Cancels state subscriptions created by this exact plugin instance. */
+        default void releaseClientStateOwner(long ownerInstanceToken) { }
+
         void onPipelineRegistered(Registration registration);
 
         void onReloadRequested(String reason);
@@ -106,6 +125,8 @@ public final class HostServicesImpl implements HostServices {
         this.nativeBridge = nativeBridge;
         this.runtime = runtime;
         this.active = new java.util.concurrent.atomic.AtomicBoolean(runtime != null);
+        this.clientState = runtime == null ? ClientStateService.EMPTY
+                : guardedClientState(runtime.clientState(instanceToken));
     }
 
     // Instance activation.
@@ -124,7 +145,13 @@ public final class HostServicesImpl implements HostServices {
      * instance is still cleaning up: read-only services remain usable for diagnostics.
      */
     public void deactivate() {
-        active.set(false);
+        if (active.compareAndSet(true, false) && runtime != null) {
+            try {
+                runtime.releaseClientStateOwner(instanceToken);
+            } catch (RuntimeException e) {
+                diagnostics.warn("Failed to cancel client state subscriptions for plugin " + ownerPluginId() + ": " + e);
+            }
+        }
     }
 
     /** Rejects a state-changing call from a services object whose owner is no longer loaded. */
@@ -143,6 +170,22 @@ public final class HostServicesImpl implements HostServices {
     }
 
     @Override public dev.luxloader.api.scene.ResourceAccess resources() { return runtime.resources(); }
+
+    @Override public ClientStateService clientState() { return clientState; }
+
+    private ClientStateService guardedClientState(ClientStateService delegate) {
+        if (delegate == null || delegate == ClientStateService.EMPTY) return ClientStateService.EMPTY;
+        return new ClientStateService() {
+            @Override public Optional<ClientStateSnapshot> current() {
+                return active.get() ? delegate.current() : Optional.empty();
+            }
+
+            @Override public ClientStateSubscription subscribe(Consumer<ClientStateBatch> listener) {
+                requireActive();
+                return delegate.subscribe(listener);
+            }
+        };
+    }
 
     /**
      * This plugin's ID, used as the owner of everything it registers. Recorded by this object because

@@ -23,7 +23,8 @@
     "TextureAnimationMixin",
     "FluidSurfaceMixin",
     "HostVulkanDeviceMixin",
-    "VulkanFeatureSetsMixin"
+    "VulkanFeatureSetsMixin",
+    "MinecraftClientStateMixin"
   ],
   "injectors": {
     "defaultRequire": 0

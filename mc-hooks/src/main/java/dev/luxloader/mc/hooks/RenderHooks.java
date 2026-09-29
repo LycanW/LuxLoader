@@ -24,6 +24,26 @@ public final class RenderHooks {
         return host != null;
     }
 
+    public static void onClientTick(Object minecraft) {
+        RenderHookHost current = host;
+        if (current == null) return;
+        try {
+            current.onClientTick(minecraft);
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.warn(tr("Could not capture client state; retaining the last valid observation"), e);
+        }
+    }
+
+    public static void onClientSafePoint(Object minecraft) {
+        RenderHookHost current = host;
+        if (current == null) return;
+        try {
+            current.onClientSafePoint(minecraft);
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.warn(tr("Could not dispatch client state at the safe update point"), e);
+        }
+    }
+
     public static boolean requiresDynamicGeometry() {
         RenderHookHost current = host;
         return current != null && current.requiresDynamicGeometry();

@@ -7,6 +7,10 @@ import java.util.List;
 
 /** Loader-neutral callbacks from Minecraft render hooks to Fabric or NeoForge. */
 public interface RenderHookHost {
+    /** Capture immutable client facts after a game tick; implementations must not invoke plugins here. */
+    default void onClientTick(Object minecraft) { }
+    /** Drain state batches and invoke plugin listeners at the safe end-of-loop update boundary. */
+    default void onClientSafePoint(Object minecraft) { }
     default boolean requiresDynamicGeometry() { return false; }
     default boolean usesPreparedEntityShadows() { return true; }
     /** Choose the world frame before Minecraft adds its prepared draw passes. */
