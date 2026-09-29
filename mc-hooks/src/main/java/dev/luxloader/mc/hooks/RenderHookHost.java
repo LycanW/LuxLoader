@@ -11,6 +11,10 @@ public interface RenderHookHost {
     default void onClientTick(Object minecraft) { }
     /** Drain state batches and invoke plugin listeners at the safe end-of-loop update boundary. */
     default void onClientSafePoint(Object minecraft) { }
+    /** Whether a Minecraft entry hook should copy behavior facts for an active event subscriber. */
+    default boolean wantsClientBehaviorCapture() { return false; }
+    /** Capture a small raw Minecraft fact; implementations must queue it for onClientSafePoint. */
+    default void onClientBehaviorSignal(Object minecraft, ClientBehaviorSignal signal) { }
     default boolean requiresDynamicGeometry() { return false; }
     default boolean usesPreparedEntityShadows() { return true; }
     /** Choose the world frame before Minecraft adds its prepared draw passes. */

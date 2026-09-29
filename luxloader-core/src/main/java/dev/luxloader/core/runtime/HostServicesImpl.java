@@ -8,6 +8,13 @@ import dev.luxloader.api.capability.CapabilityDescriptor;
 import dev.luxloader.api.capability.CapabilityRegistry;
 import dev.luxloader.api.config.ConfigSchema;
 import dev.luxloader.api.diag.Diagnostics;
+import dev.luxloader.api.event.ClientEventBatch;
+import dev.luxloader.api.event.ClientEventService;
+import dev.luxloader.api.event.ClientEventSubscription;
+import dev.luxloader.api.event.CustomEventRegistration;
+import dev.luxloader.api.event.CustomEventType;
+import dev.luxloader.api.event.EventTypeId;
+import dev.luxloader.api.event.EventValue;
 import dev.luxloader.api.nativebridge.NativeBridge;
 import dev.luxloader.api.pipeline.PipelineDescriptor;
 import dev.luxloader.api.pipeline.PipelineSettings;
@@ -60,6 +67,7 @@ public final class HostServicesImpl implements HostServices {
     private final RuntimeContext runtime;
     private final long instanceToken = NEXT_INSTANCE_TOKEN.incrementAndGet();
     private final ClientStateService clientState;
+    private final ClientEventService clientEvents;
 
     /**
      * Whether this instance still owns its registrations. Offline construction without a runtime
@@ -102,6 +110,14 @@ public final class HostServicesImpl implements HostServices {
         /** Cancels state subscriptions created by this exact plugin instance. */
         default void releaseClientStateOwner(long ownerInstanceToken) { }
 
+        /** Returns the client event service scoped to one exact plugin instance. */
+        default ClientEventService clientEvents(long ownerInstanceToken, String ownerPluginId) {
+            return ClientEventService.EMPTY;
+        }
+
+        /** Cancels event subscriptions and custom event types created by this exact plugin instance. */
+        default void releaseClientEventsOwner(long ownerInstanceToken) { }
+
         void onPipelineRegistered(Registration registration);
 
         void onReloadRequested(String reason);
@@ -127,6 +143,8 @@ public final class HostServicesImpl implements HostServices {
         this.active = new java.util.concurrent.atomic.AtomicBoolean(runtime != null);
         this.clientState = runtime == null ? ClientStateService.EMPTY
                 : guardedClientState(runtime.clientState(instanceToken));
+        this.clientEvents = runtime == null ? ClientEventService.EMPTY
+                : guardedClientEvents(runtime.clientEvents(instanceToken, ownerPluginId()));
     }
 
     // Instance activation.
@@ -151,6 +169,11 @@ public final class HostServicesImpl implements HostServices {
             } catch (RuntimeException e) {
                 diagnostics.warn("Failed to cancel client state subscriptions for plugin " + ownerPluginId() + ": " + e);
             }
+            try {
+                runtime.releaseClientEventsOwner(instanceToken);
+            } catch (RuntimeException e) {
+                diagnostics.warn("Failed to cancel client event subscriptions for plugin " + ownerPluginId() + ": " + e);
+            }
         }
     }
 
@@ -173,6 +196,8 @@ public final class HostServicesImpl implements HostServices {
 
     @Override public ClientStateService clientState() { return clientState; }
 
+    @Override public ClientEventService clientEvents() { return clientEvents; }
+
     private ClientStateService guardedClientState(ClientStateService delegate) {
         if (delegate == null || delegate == ClientStateService.EMPTY) return ClientStateService.EMPTY;
         return new ClientStateService() {
@@ -183,6 +208,32 @@ public final class HostServicesImpl implements HostServices {
             @Override public ClientStateSubscription subscribe(Consumer<ClientStateBatch> listener) {
                 requireActive();
                 return delegate.subscribe(listener);
+            }
+        };
+    }
+
+    private ClientEventService guardedClientEvents(ClientEventService delegate) {
+        if (delegate == null || delegate == ClientEventService.EMPTY) return ClientEventService.EMPTY;
+        return new ClientEventService() {
+            @Override public ClientEventSubscription subscribe(Consumer<ClientEventBatch> listener) {
+                requireActive();
+                return delegate.subscribe(listener);
+            }
+
+            @Override public ClientEventSubscription subscribeCustom(CustomEventType type,
+                                                                       Consumer<ClientEventBatch> listener) {
+                requireActive();
+                return delegate.subscribeCustom(type, listener);
+            }
+
+            @Override public CustomEventRegistration registerCustomType(EventTypeId id, int version) {
+                requireActive();
+                return delegate.registerCustomType(id, version);
+            }
+
+            @Override public void publish(CustomEventType type, EventValue.ObjectValue payload) {
+                requireActive();
+                delegate.publish(type, payload);
             }
         };
     }

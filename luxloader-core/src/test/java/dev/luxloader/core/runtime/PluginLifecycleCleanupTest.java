@@ -159,6 +159,40 @@ class PluginLifecycleCleanupTest {
     }
 
     @Test
+    @DisplayName("Reload Cancels Only The Replaced Client Event Owner")
+    void reloadCancelsOnlyTheReplacedClientEventOwner() {
+        RecordingLifecyclePlugin.subscribeToClientEventsOnLoad = true;
+        initializeDriver();
+
+        RecordingLifecyclePlugin oldPlugin = instance(recordingPluginIds().getFirst());
+        var oldSubscription = oldPlugin.clientEventSubscription();
+        assertTrue(oldSubscription != null && !oldSubscription.isCancelled());
+        driver.observeClientStateSafePoint(false, 1L, PluginLifecycleCleanupTest::stateSample);
+        assertEquals(1, oldPlugin.clientEventBatches().size());
+        assertTrue(oldPlugin.clientEventBatches().getFirst().initial());
+
+        driver.reload("client event owner reload");
+
+        RecordingLifecyclePlugin newPlugin = instance(recordingPluginIds().getFirst());
+        var newSubscription = newPlugin.clientEventSubscription();
+        assertTrue(oldSubscription.isCancelled(), "Reload must invalidate old event subscriptions");
+        assertTrue(newSubscription != null && !newSubscription.isCancelled());
+        assertThrows(IllegalStateException.class,
+                () -> oldPlugin.host().clientEvents().subscribe(batch -> fail("stale owner must be rejected")));
+        assertFalse(oldSubscription.cancel(), "Cancelling an invalidated event handle is idempotent");
+        assertFalse(newSubscription.isCancelled(), "An old handle cannot cancel the replacement owner's subscription");
+
+        driver.observeClientStateSafePoint(false, 1L, PluginLifecycleCleanupTest::stateSample);
+        assertEquals(1, oldPlugin.clientEventBatches().size(), "The replaced owner must receive no later event batch");
+        assertEquals(1, newPlugin.clientEventBatches().size(), "The new owner receives its own initial boundary");
+        assertTrue(newPlugin.clientEventBatches().getFirst().initial());
+
+        driver.close();
+        assertTrue(newSubscription.isCancelled(), "Close must release the live owner's event subscription");
+        driver = null;
+    }
+
+    @Test
     @DisplayName("Unload Failure Does Not Block Other Plugins")
     void unloadFailureDoesNotBlockOtherPlugins() {
         initializeDriver();

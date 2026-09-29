@@ -2,6 +2,8 @@ package dev.luxloader.core.runtime;
 
 import dev.luxloader.api.GpuId;
 import dev.luxloader.api.LuxMod;
+import dev.luxloader.api.event.ClientEventBatch;
+import dev.luxloader.api.event.ClientEventSubscription;
 import dev.luxloader.api.pipeline.PipelineDescriptor;
 import dev.luxloader.api.plugin.HostServices;
 import dev.luxloader.api.plugin.PipelinePlugin;
@@ -49,6 +51,8 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
     public static volatile boolean deregisterContributorOnLoad;
     /** Registers a subscription without cancelling it manually to verify owner cleanup. */
     public static volatile boolean subscribeToClientStateOnLoad;
+    /** Registers an event subscription without cancelling it manually to verify owner cleanup. */
+    public static volatile boolean subscribeToClientEventsOnLoad;
 
     /**
      * Rendezvous for tests that must observe or extend the plugin's registrations while its onLoad is
@@ -103,6 +107,7 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
         FAILING_UNLOADS.clear();
         deregisterContributorOnLoad = false;
         subscribeToClientStateOnLoad = false;
+        subscribeToClientEventsOnLoad = false;
         releaseLoadRendezvous();
         clearLoadRendezvous();
     }
@@ -125,6 +130,8 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
     private PluginBootstrap bootstrap;
     private ClientStateSubscription clientStateSubscription;
     private final java.util.List<ClientStateBatch> clientStateBatches = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private ClientEventSubscription clientEventSubscription;
+    private final java.util.List<ClientEventBatch> clientEventBatches = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public RecordingLifecyclePlugin() {
         instanceId = ID.namespace() + ":" + ID.path() + "/instance-" + INSTANCE_SEQUENCE.incrementAndGet();
@@ -207,6 +214,10 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
         return java.util.List.copyOf(clientStateBatches);
     }
 
+    public ClientEventSubscription clientEventSubscription() { return clientEventSubscription; }
+
+    public java.util.List<ClientEventBatch> clientEventBatches() { return java.util.List.copyOf(clientEventBatches); }
+
     /** Whether this exact instance ran onUnload; distinguishes instances sharing a plugin ID. */
     public boolean unloaded() {
         return UNLOADED.get(instanceId) == this;
@@ -234,6 +245,9 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
         loadCount.incrementAndGet();
         if (subscribeToClientStateOnLoad) {
             clientStateSubscription = host.clientState().subscribe(clientStateBatches::add);
+        }
+        if (subscribeToClientEventsOnLoad) {
+            clientEventSubscription = host.clientEvents().subscribe(clientEventBatches::add);
         }
         host.registerSceneContributor(contributorId, scene -> {
             contributionCount.incrementAndGet();

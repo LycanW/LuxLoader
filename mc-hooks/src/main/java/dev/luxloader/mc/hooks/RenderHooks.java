@@ -13,6 +13,8 @@ import java.util.List;
 public final class RenderHooks {
     private static final Logger LOGGER = LoggerFactory.getLogger("LuxLoader/Hooks");
     private static volatile RenderHookHost host;
+    private static final ThreadLocal<Boolean> applyingServerHotbarSlot = ThreadLocal.withInitial(() -> false);
+    private static final ThreadLocal<Integer> continueBlockBreakDepth = new ThreadLocal<>();
 
     private RenderHooks() { }
 
@@ -42,6 +44,58 @@ public final class RenderHooks {
         } catch (RuntimeException | LinkageError e) {
             LOGGER.warn(tr("Could not dispatch client state at the safe update point"), e);
         }
+    }
+
+    public static boolean wantsClientBehaviorCapture() {
+        RenderHookHost current = host;
+        if (current == null) return false;
+        try {
+            return current.wantsClientBehaviorCapture();
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.warn(tr("Could not check client behavior event demand"), e);
+            return false;
+        }
+    }
+
+    public static void onClientBehaviorSignal(Object minecraft, ClientBehaviorSignal signal) {
+        RenderHookHost current = host;
+        if (current == null) return;
+        try {
+            current.onClientBehaviorSignal(minecraft, signal);
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.warn(tr("Could not capture a client behavior event"), e);
+        }
+    }
+
+    /** Marks the exact Inventory setter invoked by a server hotbar packet, preventing duplicate observation. */
+    public static void beginServerHotbarSlotNotification() {
+        applyingServerHotbarSlot.set(true);
+    }
+
+    public static void endServerHotbarSlotNotification() {
+        applyingServerHotbarSlot.remove();
+    }
+
+    public static boolean isApplyingServerHotbarSlotNotification() {
+        return applyingServerHotbarSlot.get();
+    }
+
+    /** Opens the exact continueDestroyBlock call scope so its nested start is distinguishable from a user start. */
+    public static void beginContinueBlockBreak() {
+        Integer depth = continueBlockBreakDepth.get();
+        continueBlockBreakDepth.set(depth == null ? 1 : depth + 1);
+    }
+
+    /** Closes one continueDestroyBlock scope on its normal return. */
+    public static void endContinueBlockBreak() {
+        Integer depth = continueBlockBreakDepth.get();
+        if (depth == null || depth <= 1) continueBlockBreakDepth.remove();
+        else continueBlockBreakDepth.set(depth - 1);
+    }
+
+    public static boolean isContinuingBlockBreak() {
+        Integer depth = continueBlockBreakDepth.get();
+        return depth != null && depth > 0;
     }
 
     public static boolean requiresDynamicGeometry() {

@@ -24,7 +24,13 @@
     "FluidSurfaceMixin",
     "HostVulkanDeviceMixin",
     "VulkanFeatureSetsMixin",
-    "MinecraftClientStateMixin"
+    "MinecraftClientStateMixin",
+    "MultiPlayerGameModeBehaviorMixin",
+    "ClientPacketBehaviorMixin",
+    "EntityBehaviorMixin",
+    "LivingEntityBehaviorMixin",
+    "GuiBehaviorMixin",
+    "InventoryBehaviorMixin"
   ],
   "injectors": {
     "defaultRequire": 0

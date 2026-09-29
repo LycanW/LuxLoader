@@ -36,6 +36,25 @@ class ClientStateHubTest {
     }
 
     @Test
+    @DisplayName("Event demand retains a current baseline without creating state callbacks")
+    void externalObservationDemandRetainsCurrentSnapshot() {
+        ClientStateHub hub = new ClientStateHub(() -> 0L, 4, ignored -> { });
+        AtomicInteger factoryCalls = new AtomicInteger();
+        var factory = factory(factoryCalls, 1L, true, false);
+
+        hub.clientTick(false, factory, true);
+        hub.safePoint(false, 1L, factory, true);
+
+        assertEquals(1, factoryCalls.get());
+        assertNotNull(hub.current().orElse(null));
+        assertEquals(0, hub.metrics().activeSubscriptions());
+        assertEquals(0, hub.metrics().deliveredBatchCount());
+
+        hub.safePoint(false, 1L, factory, false);
+        assertTrue(hub.current().isEmpty());
+    }
+
+    @Test
     @DisplayName("A midstream subscriber starts from its first safe boundary")
     void midstreamSubscriptionGetsBoundaryBaseline() {
         ClientStateHub hub = new ClientStateHub(() -> 0L, 8, ignored -> { });

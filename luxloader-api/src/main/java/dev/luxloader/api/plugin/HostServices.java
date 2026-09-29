@@ -6,6 +6,7 @@ import dev.luxloader.api.capability.CapabilityDescriptor;
 import dev.luxloader.api.capability.CapabilityLevel;
 import dev.luxloader.api.config.ConfigSchema;
 import dev.luxloader.api.diag.Diagnostics;
+import dev.luxloader.api.event.ClientEventService;
 import dev.luxloader.api.nativebridge.NativeBridge;
 import dev.luxloader.api.pipeline.PipelineDescriptor;
 import dev.luxloader.api.pipeline.PipelineSettings;
@@ -59,6 +60,11 @@ public interface HostServices {
     /** Environment and local-player observations owned by this plugin instance. */
     default ClientStateService clientState() {
         return ClientStateService.EMPTY;
+    }
+
+    /** Client behavior observations and plugin-defined events, delivered at the client safe update point. */
+    default ClientEventService clientEvents() {
+        return ClientEventService.EMPTY;
     }
 
     /** Plugin metadata. */

@@ -8,9 +8,11 @@ import dev.luxloader.api.host.HostAdapter;
 import dev.luxloader.api.plugin.RenderDriver;
 import dev.luxloader.core.runtime.RenderDriverImpl;
 import dev.luxloader.mc.MinecraftBridge;
+import dev.luxloader.mc.MinecraftBehaviorEventAccess;
 import dev.luxloader.mc.MinecraftClientStateAccess;
 import dev.luxloader.mc.MinecraftGraphicsAccess;
 import dev.luxloader.mc.MinecraftHostAdapter;
+import dev.luxloader.mc.hooks.ClientBehaviorSignal;
 import dev.luxloader.mc.hooks.RenderHookHost;
 import dev.luxloader.mc.hooks.RenderHooks;
 import net.minecraft.client.gui.components.Button;
@@ -52,7 +54,9 @@ public final class LuxLoaderNeoForgeClient implements RenderHookHost {
     private static MinecraftBridge bridge;
     private static MinecraftHostAdapter hostAdapter;
     private static MinecraftClientStateAccess clientStateAccess;
+    private static MinecraftBehaviorEventAccess behaviorEventAccess;
     private static boolean clientStateAccessWarningLogged;
+    private static boolean behaviorEventAccessWarningLogged;
     private static boolean vulkanBackend;
     private static String gameVersion = "";
 
@@ -98,8 +102,37 @@ public final class LuxLoaderNeoForgeClient implements RenderHookHost {
             long sessionGeneration = access.observeSessionGeneration(minecraft);
             current.observeClientStateSafePoint(access.isPaused(minecraft), sessionGeneration,
                     (sequence, time) -> sample(access, minecraft, sequence, time));
+            boolean eventDemand = current.hasClientEventSubscribers();
+            if (!behaviorEventAccessWarningLogged && (eventDemand || behaviorEventAccess != null)) {
+                try {
+                    behaviorEventAccess(access, current, minecraft).onSafePoint(minecraft, eventDemand);
+                } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+                    warnBehaviorEventAccess(e);
+                }
+            }
         } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
             warnClientStateAccess(e);
+        }
+    }
+
+    @Override
+    public boolean wantsClientBehaviorCapture() {
+        RenderDriverImpl current = driver;
+        return current != null && current.hasClientEventSubscribers() && !behaviorEventAccessWarningLogged;
+    }
+
+    @Override
+    public void onClientBehaviorSignal(Object minecraft, ClientBehaviorSignal signal) {
+        RenderDriverImpl current = driver;
+        if (current == null || !current.isInitialized() || !current.hasClientEventSubscribers()
+                || behaviorEventAccessWarningLogged) return;
+        Object client = minecraft == null ? net.minecraft.client.Minecraft.getInstance() : minecraft;
+        if (client == null) return;
+        try {
+            MinecraftClientStateAccess stateAccess = clientStateAccess(client);
+            behaviorEventAccess(stateAccess, current, client).capture(client, signal);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            warnBehaviorEventAccess(e);
         }
     }
 
@@ -109,6 +142,16 @@ public final class LuxLoaderNeoForgeClient implements RenderHookHost {
             clientStateAccess = new MinecraftClientStateAccess(minecraft.getClass().getClassLoader());
         }
         return clientStateAccess;
+    }
+
+    private static synchronized MinecraftBehaviorEventAccess behaviorEventAccess(
+            MinecraftClientStateAccess stateAccess, RenderDriverImpl current, Object minecraft)
+            throws ReflectiveOperationException {
+        if (behaviorEventAccess == null) {
+            behaviorEventAccess = new MinecraftBehaviorEventAccess(
+                    minecraft.getClass().getClassLoader(), stateAccess, current);
+        }
+        return behaviorEventAccess;
     }
 
     private static dev.luxloader.api.state.ClientStateSnapshot sample(MinecraftClientStateAccess access,
@@ -124,6 +167,12 @@ public final class LuxLoaderNeoForgeClient implements RenderHookHost {
         if (clientStateAccessWarningLogged) return;
         clientStateAccessWarningLogged = true;
         LOGGER.warn(tr("Client state integration is unavailable; observations will be skipped"), error);
+    }
+
+    private static synchronized void warnBehaviorEventAccess(Throwable error) {
+        if (behaviorEventAccessWarningLogged) return;
+        behaviorEventAccessWarningLogged = true;
+        LOGGER.warn(tr("Client behavior event integration is unavailable; event capture will be skipped"), error);
     }
 
     public LuxLoaderNeoForgeClient(IEventBus modEventBus) {

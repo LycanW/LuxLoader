@@ -28,6 +28,9 @@ import dev.luxloader.api.pipeline.RenderContext;
 import dev.luxloader.api.pipeline.RenderPipeline;
 import dev.luxloader.api.state.ClientStateService;
 import dev.luxloader.api.state.ClientStateSnapshot;
+import dev.luxloader.api.event.BehaviorEvent;
+import dev.luxloader.api.event.ClientEventService;
+import dev.luxloader.api.event.EventValue;
 import dev.luxloader.api.pipeline.Requirements;
 import dev.luxloader.api.plugin.PipelineInfo;
 import dev.luxloader.api.plugin.PipelinePlugin;
@@ -139,6 +142,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
     private VulkanDispatchImpl vulkanDispatch;
     private PluginLoader pluginLoader;
     private final ClientStateHub clientStateHub;
+    private final ClientEventHub clientEventHub;
 
     private final List<PipelinePlugin> plugins = new ArrayList<>();
     private final Map<String, HostServicesImpl> hostServices = new LinkedHashMap<>();
@@ -265,6 +269,8 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
                 : inferContentDirectory(this.configDirectory);
         this.clientStateHub = new ClientStateHub(System::nanoTime,
                 ClientStateHub.DEFAULT_QUEUE_CAPACITY, this::reportClientStateListenerFailure);
+        this.clientEventHub = new ClientEventHub(ClientEventHub.DEFAULT_QUEUE_CAPACITY,
+                this::reportClientEventListenerFailure);
     }
 
     private void reportClientStateListenerFailure(Throwable error) {
@@ -272,6 +278,11 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
         if (current != null) {
             current.warn(tr("Client state stream processing failed: ") + error);
         }
+    }
+
+    private void reportClientEventListenerFailure(Throwable error) {
+        DiagnosticsImpl current = diagnostics;
+        if (current != null) current.warn(tr("Client event listener failed and was cancelled: ") + error);
     }
 
     /**
@@ -2167,6 +2178,16 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
         clientStateHub.releaseOwner(ownerInstanceToken);
     }
 
+    @Override
+    public ClientEventService clientEvents(long ownerInstanceToken, String ownerPluginId) {
+        return clientEventHub.serviceForOwner(ownerInstanceToken, ownerPluginId, clientStateHub::current);
+    }
+
+    @Override
+    public void releaseClientEventsOwner(long ownerInstanceToken) {
+        clientEventHub.releaseOwner(ownerInstanceToken);
+    }
+
     /** Whether any active plugin needs state payloads from the client tick hook. */
     public boolean hasClientStateSubscribers() {
         return initialized.get() && clientStateHub.hasSubscribers();
@@ -2174,19 +2195,47 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
 
     /** Whether the safe point needs to capture an initial or session-boundary sample. */
     public boolean needsClientStateSnapshot() {
-        return initialized.get() && clientStateHub.needsInitialSnapshot();
+        return initialized.get() && (clientStateHub.needsInitialSnapshot()
+                || (clientEventHub.hasSubscribers() && clientStateHub.current().isEmpty()));
     }
 
     /** Capture immutable facts only; plugin callbacks are deferred to the matching safe point. */
     public void observeClientStateTick(boolean paused,
             BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
-        if (initialized.get()) clientStateHub.clientTick(paused, snapshotFactory);
+        if (initialized.get()) clientStateHub.clientTick(paused, snapshotFactory,
+                clientEventHub.hasSubscribers());
     }
 
     /** Observe the session/pause boundary and dispatch queued batches on the client update thread. */
     public void observeClientStateSafePoint(boolean paused, long sessionGeneration,
             BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
-        if (initialized.get()) clientStateHub.safePoint(paused, sessionGeneration, snapshotFactory);
+        if (!initialized.get()) return;
+        boolean eventDemand = clientEventHub.hasSubscribers();
+        clientStateHub.safePoint(paused, sessionGeneration, snapshotFactory, eventDemand);
+        clientEventHub.safePoint(clientStateHub.current().orElse(null), clientStateHub.captureFailureEpoch());
+    }
+
+    /** Whether an injected Minecraft behavior source should copy any event fields. */
+    public boolean hasClientEventSubscribers() {
+        return initialized.get() && clientEventHub.hasSubscribers();
+    }
+
+    /** Capture a built-in behavior fact for delivery at the next client safe point. */
+    public boolean captureClientBehaviorEvent(long sessionGeneration, BehaviorEvent.Kind kind,
+            BehaviorEvent.Phase phase, BehaviorEvent.Source source,
+            java.util.function.Supplier<EventValue.ObjectValue> fieldsFactory) {
+        return captureClientBehaviorEvent(sessionGeneration, kind, phase, source,
+                Optional.empty(), fieldsFactory);
+    }
+
+    /** Capture a behavior fact together with the player identity observed at its source, if applicable. */
+    public boolean captureClientBehaviorEvent(long sessionGeneration, BehaviorEvent.Kind kind,
+            BehaviorEvent.Phase phase, BehaviorEvent.Source source,
+            Optional<ClientStateSnapshot.EntityIdentity> playerIdentity,
+            java.util.function.Supplier<EventValue.ObjectValue> fieldsFactory) {
+        if (!initialized.get() || !clientEventHub.hasSubscribers()) return false;
+        return clientEventHub.recordBehavior(sessionGeneration, kind, phase, source,
+                playerIdentity, fieldsFactory, clientStateHub.current());
     }
 
     /**

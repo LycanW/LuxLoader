@@ -43,12 +43,14 @@ public final class ClientStateHub {
     private ClientStateSnapshot latest;
     private ClientStateBatch.ResyncReason pendingResync = ClientStateBatch.ResyncReason.NONE;
     private long droppedSamples;
+    private long captureFailureEpoch;
 
     private long queuePeak;
     private long queueOverflowCount;
     private long staleSamplesRejected;
     private long deliveredBatchCount;
     private long deliveredSprintTransitionCount;
+    private boolean externalObservationDemand;
 
     public ClientStateHub() {
         this(System::nanoTime, DEFAULT_QUEUE_CAPACITY, ignored -> { });
@@ -87,7 +89,7 @@ public final class ClientStateHub {
     /** True when the next safe point needs a fresh baseline but no sample is available yet. */
     public boolean needsInitialSnapshot() {
         synchronized (lock) {
-            return latest == null && !subscriptions.isEmpty();
+            return latest == null && (!subscriptions.isEmpty() || externalObservationDemand);
         }
     }
 
@@ -97,15 +99,24 @@ public final class ClientStateHub {
      */
     public void clientTick(boolean paused,
                            BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
+        clientTick(paused, snapshotFactory, false);
+    }
+
+    /** Capture a retained state baseline for another active host service, without state callbacks. */
+    public void clientTick(boolean paused,
+                           BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory,
+                           boolean externalDemand) {
         Objects.requireNonNull(snapshotFactory, "snapshotFactory");
         CaptureContext context;
         boolean capture;
         synchronized (lock) {
+            externalObservationDemand = externalDemand;
+            if (subscriptions.isEmpty() && !externalObservationDemand) clearRetainedStateLocked();
             updateClockLocked(paused);
             if (!paused) logicalTick = saturatingAdd(logicalTick, 1L);
             sampleSequence = saturatingAdd(sampleSequence, 1L);
             context = contextLocked(paused);
-            capture = !subscriptions.isEmpty();
+            capture = !subscriptions.isEmpty() || externalObservationDemand;
         }
         if (capture) capture(context, snapshotFactory);
     }
@@ -116,10 +127,18 @@ public final class ClientStateHub {
      */
     public void safePoint(boolean paused, long observedSessionGeneration,
                           BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
+        safePoint(paused, observedSessionGeneration, snapshotFactory, false);
+    }
+
+    /** Observe and retain state for event listeners that need an initial or resynchronization snapshot. */
+    public void safePoint(boolean paused, long observedSessionGeneration,
+                          BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory,
+                          boolean externalDemand) {
         Objects.requireNonNull(snapshotFactory, "snapshotFactory");
         CaptureContext context = null;
         boolean capture = false;
         synchronized (lock) {
+            externalObservationDemand = externalDemand;
             boolean pauseChanged = !pauseKnown || lastPaused != paused;
             updateClockLocked(paused);
 
@@ -132,13 +151,16 @@ public final class ClientStateHub {
             }
 
             if (sessionChanged) {
-                markGapLocked(ClientStateBatch.ResyncReason.WORLD_SESSION_CHANGED);
-                if (subscriptions.isEmpty()) {
-                    latest = null;
-                    pending.clear();
-                    pendingResync = ClientStateBatch.ResyncReason.NONE;
-                    droppedSamples = 0L;
-                } else if (latest == null || latest.world().generation() != observedSessionGeneration) {
+                if (subscriptions.isEmpty() && externalObservationDemand) {
+                    clearRetainedStateLocked();
+                    capture = true;
+                } else if (subscriptions.isEmpty()) {
+                    clearRetainedStateLocked();
+                } else {
+                    markGapLocked(ClientStateBatch.ResyncReason.WORLD_SESSION_CHANGED);
+                }
+                if (!subscriptions.isEmpty()
+                        && (latest == null || latest.world().generation() != observedSessionGeneration)) {
                     if (!pending.isEmpty()) {
                         droppedSamples = saturatingAdd(droppedSamples, pending.size());
                         pending.clear();
@@ -148,22 +170,26 @@ public final class ClientStateHub {
                 }
             }
 
-            if (!subscriptions.isEmpty() && observedSessionGeneration >= 0
+            boolean hasDemand = !subscriptions.isEmpty() || externalObservationDemand;
+            if (hasDemand && observedSessionGeneration >= 0
                     && observedSessionGeneration == highestSessionGeneration
                     && (latest == null || latest.world().generation() != observedSessionGeneration)) {
                 capture = true;
             }
 
             pauseKnown = true;
-            if (!subscriptions.isEmpty()) {
+            if (hasDemand) {
                 if (latest == null) {
                     capture = true;
                 } else if (pauseChanged && !capture) {
                     sampleSequence = saturatingAdd(sampleSequence, 1L);
                     ClientStateSnapshot.LogicalTime time = logicalTimeLocked(paused);
-                    enqueueLocked(withTimeAndSequence(latest, sampleSequence, time),
-                            ClientStateBatch.ResyncReason.NONE);
+                    ClientStateSnapshot updated = withTimeAndSequence(latest, sampleSequence, time);
+                    if (subscriptions.isEmpty()) latest = updated;
+                    else enqueueLocked(updated, ClientStateBatch.ResyncReason.NONE);
                 }
+            } else if (subscriptions.isEmpty()) {
+                clearRetainedStateLocked();
             }
 
             if (capture) {
@@ -183,6 +209,13 @@ public final class ClientStateHub {
         }
     }
 
+    /** Monotonic marker for sampling failures that event consumers must observe at their next boundary. */
+    public long captureFailureEpoch() {
+        synchronized (lock) {
+            return captureFailureEpoch;
+        }
+    }
+
     Metrics metrics() {
         synchronized (lock) {
             return new Metrics(subscriptions.size(), pending.size(), queuePeak, queueOverflowCount,
@@ -194,7 +227,7 @@ public final class ClientStateHub {
     private void capture(CaptureContext context,
                          BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> factory) {
         synchronized (lock) {
-            if (subscriptions.isEmpty()) return;
+            if (subscriptions.isEmpty() && !externalObservationDemand) return;
         }
         try {
             ClientStateSnapshot snapshot = factory.apply(context.sequence(), context.time());
@@ -208,11 +241,13 @@ public final class ClientStateHub {
                 throw new IllegalArgumentException("Snapshot time does not match its capture boundary");
             }
             synchronized (lock) {
-                enqueueLocked(snapshot, ClientStateBatch.ResyncReason.NONE);
+                if (subscriptions.isEmpty()) retainExternalSnapshotLocked(snapshot);
+                else enqueueLocked(snapshot, ClientStateBatch.ResyncReason.NONE);
             }
         } catch (RuntimeException | LinkageError e) {
             synchronized (lock) {
-                if (!subscriptions.isEmpty()) {
+                if (!subscriptions.isEmpty() || externalObservationDemand) {
+                    captureFailureEpoch = saturatingAdd(captureFailureEpoch, 1L);
                     droppedSamples = saturatingAdd(droppedSamples, pending.size() + 1L);
                     pending.clear();
                     pendingResync = ClientStateBatch.ResyncReason.SAMPLE_CAPTURE_FAILED;
@@ -280,7 +315,7 @@ public final class ClientStateHub {
                 pending.clear();
                 pendingResync = ClientStateBatch.ResyncReason.NONE;
                 droppedSamples = 0L;
-                latest = null;
+                if (!externalObservationDemand) latest = null;
                 return;
             }
 
@@ -461,7 +496,26 @@ public final class ClientStateHub {
     }
 
     private void clearIfUnusedLocked() {
-        if (!subscriptions.isEmpty()) return;
+        if (!subscriptions.isEmpty() || externalObservationDemand) return;
+        clearRetainedStateLocked();
+    }
+
+    private void retainExternalSnapshotLocked(ClientStateSnapshot snapshot) {
+        long generation = snapshot.world().generation();
+        if (generation < highestSessionGeneration
+                || (latest != null && generation == latest.world().generation()
+                && snapshot.sampleSequence() <= latest.sampleSequence())) {
+            staleSamplesRejected++;
+            return;
+        }
+        highestSessionGeneration = Math.max(highestSessionGeneration, generation);
+        latest = snapshot;
+        pending.clear();
+        pendingResync = ClientStateBatch.ResyncReason.NONE;
+        droppedSamples = 0L;
+    }
+
+    private void clearRetainedStateLocked() {
         pending.clear();
         pendingResync = ClientStateBatch.ResyncReason.NONE;
         droppedSamples = 0L;

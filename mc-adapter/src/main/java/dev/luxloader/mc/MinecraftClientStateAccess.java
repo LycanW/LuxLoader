@@ -15,6 +15,7 @@ public final class MinecraftClientStateAccess {
     private final Field playerField;
     private final Method connection;
     private final Method paused;
+    private final Method isSameThread;
     private final Method dimension;
     private final Method defaultClockTime;
     private final Method rainLevel;
@@ -31,6 +32,7 @@ public final class MinecraftClientStateAccess {
     private final Method yRot;
     private final Method deltaMovement;
     private final Method onGround;
+    private final Method inWater;
     private final Method sprinting;
     private final Method swimming;
     private final Method pose;
@@ -43,6 +45,7 @@ public final class MinecraftClientStateAccess {
     private final Method offHand;
     private final Method inventory;
     private final Method selectedSlot;
+    private final Method itemInHand;
     private final Method itemIsEmpty;
     private final Method itemCount;
     private final Method itemDamage;
@@ -77,6 +80,7 @@ public final class MinecraftClientStateAccess {
         playerField = minecraft.getField("player");
         connection = minecraft.getMethod("getConnection");
         paused = minecraft.getMethod("isPaused");
+        isSameThread = minecraft.getMethod("isSameThread");
         dimension = level.getMethod("dimension");
         defaultClockTime = level.getMethod("getDefaultClockTime");
         rainLevel = level.getMethod("getRainLevel", float.class);
@@ -94,6 +98,7 @@ public final class MinecraftClientStateAccess {
         yRot = entity.getMethod("getYRot");
         deltaMovement = entity.getMethod("getDeltaMovement");
         onGround = entity.getMethod("onGround");
+        inWater = entity.getMethod("isInWater");
         sprinting = entity.getMethod("isSprinting");
         swimming = entity.getMethod("isSwimming");
         pose = entity.getMethod("getPose");
@@ -107,6 +112,7 @@ public final class MinecraftClientStateAccess {
         offHand = living.getMethod("getOffhandItem");
         inventory = player.getMethod("getInventory");
         selectedSlot = inventoryType.getMethod("getSelectedSlot");
+        itemInHand = player.getMethod("getItemInHand", loader.loadClass("net.minecraft.world.InteractionHand"));
 
         itemIsEmpty = itemStack.getMethod("isEmpty");
         itemCount = itemStack.getMethod("getCount");
@@ -130,6 +136,57 @@ public final class MinecraftClientStateAccess {
         return (boolean) paused.invoke(minecraft);
     }
 
+    /** Returns whether a source hook is running on Minecraft's client update thread. */
+    public boolean isClientThread(Object minecraft) throws ReflectiveOperationException {
+        return (boolean) isSameThread.invoke(minecraft);
+    }
+
+    /** Current local player reference for identity comparison inside the adapter only. */
+    public Object localPlayer(Object minecraft) throws ReflectiveOperationException {
+        return playerField.get(minecraft);
+    }
+
+    public boolean isLocalPlayer(Object minecraft, Object entity) throws ReflectiveOperationException {
+        return entity != null && entity == playerField.get(minecraft);
+    }
+
+    public int entityId(Object entity) throws ReflectiveOperationException {
+        return ((Number) entityId.invoke(entity)).intValue();
+    }
+
+    public boolean isOnGround(Object entity) throws ReflectiveOperationException {
+        return (boolean) onGround.invoke(entity);
+    }
+
+    public boolean isInWater(Object entity) throws ReflectiveOperationException {
+        return (boolean) inWater.invoke(entity);
+    }
+
+    public int selectedSlot(Object player) throws ReflectiveOperationException {
+        Object playerInventory = inventory.invoke(player);
+        return ((Number) selectedSlot.invoke(playerInventory)).intValue();
+    }
+
+    /** Whether an observed inventory setter belongs to the current local player. */
+    public boolean isLocalPlayerInventory(Object minecraft, Object candidate)
+            throws ReflectiveOperationException {
+        Object player = playerField.get(minecraft);
+        return player != null && inventory.invoke(player) == candidate;
+    }
+
+    public Object itemInHand(Object player, Object hand) throws ReflectiveOperationException {
+        return itemInHand.invoke(player, hand);
+    }
+
+    /** Copies the same limited item descriptor used by the state stream. */
+    public ClientStateSnapshot.ItemDescription describeItem(Object stack) {
+        try {
+            return readItem(stack);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return ClientStateSnapshot.ItemDescription.EMPTY;
+        }
+    }
+
     /**
      * Cheap per-loop identity tracking. It reads only the current level, connection and player
      * references; it does not walk entities, chunks, or inventory contents.
@@ -147,6 +204,17 @@ public final class MinecraftClientStateAccess {
     /** Current opaque world-session generation for the host's safe-point boundary. */
     public long observeSessionGeneration(Object minecraft) throws ReflectiveOperationException {
         return observeLifecycle(minecraft).sessionGeneration();
+    }
+
+    /** Current local-player identity, including the object generation tracked by the state bridge. */
+    public synchronized ClientStateSnapshot.EntityIdentity observePlayerIdentity(Object minecraft)
+            throws ReflectiveOperationException {
+        ClientIdentityTracker.Lifecycle lifecycle = observeLifecycle(minecraft);
+        Object player = lifecycle.currentPlayer();
+        if (player == null || !lifecycle.worldLoaded()) return null;
+        return new ClientStateSnapshot.EntityIdentity(lifecycle.sessionGeneration(),
+                ((Number) entityId.invoke(player)).intValue(), String.valueOf(entityUuid.invoke(player)),
+                lifecycle.playerGeneration());
     }
 
     /** Copy one sampled game state into values safe to retain beyond the Minecraft callback. */
