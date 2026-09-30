@@ -75,6 +75,7 @@ public final class LuxLoaderNeoForgeClient implements RenderHookHost {
      * onBeforePresent calls, never configuration or inference.
      */
     private static boolean hooksInstalled;
+    private static boolean soundBackendAttached;
 
     private static boolean worldGraphFrame;
     private static boolean worldGraphSubmitted;
@@ -100,6 +101,10 @@ public final class LuxLoaderNeoForgeClient implements RenderHookHost {
         try {
             MinecraftClientStateAccess access = clientStateAccess(minecraft);
             long sessionGeneration = access.observeSessionGeneration(minecraft);
+            if (!soundBackendAttached) {
+                current.attachSoundBackend(new dev.luxloader.mc.hooks.MinecraftSoundBackend((net.minecraft.client.Minecraft)minecraft));
+                soundBackendAttached = true;
+            }
             current.observeClientStateSafePoint(access.isPaused(minecraft), sessionGeneration,
                     (sequence, time) -> sample(access, minecraft, sequence, time));
             boolean eventDemand = current.hasClientEventSubscribers();

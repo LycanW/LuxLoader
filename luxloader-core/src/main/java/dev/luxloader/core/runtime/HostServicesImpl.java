@@ -108,6 +108,12 @@ public final class HostServicesImpl implements HostServices {
 
         default void releaseResourceOwner(long ownerInstanceToken) { }
 
+        default dev.luxloader.api.presentation.PresentationService presentations(long ownerInstanceToken, String pluginId) {
+            return dev.luxloader.api.presentation.PresentationService.UNAVAILABLE;
+        }
+
+        default void releasePresentationOwner(long ownerInstanceToken) { }
+
         /** Returns the per-plugin-instance client state service. */
         default ClientStateService clientState(long ownerInstanceToken) {
             return ClientStateService.EMPTY;
@@ -176,6 +182,11 @@ public final class HostServicesImpl implements HostServices {
                 diagnostics.warn(tr("Failed to cancel resource preparation for plugin ") + ownerPluginId() + ": " + e);
             }
             try {
+                runtime.releasePresentationOwner(instanceToken);
+            } catch (RuntimeException | LinkageError e) {
+                diagnostics.warn(tr("Failed to cancel presentations for plugin ") + ownerPluginId() + ": " + e);
+            }
+            try {
                 runtime.releaseClientStateOwner(instanceToken);
             } catch (RuntimeException e) {
                 diagnostics.warn("Failed to cancel client state subscriptions for plugin " + ownerPluginId() + ": " + e);
@@ -216,6 +227,28 @@ public final class HostServicesImpl implements HostServices {
     @Override public ClientStateService clientState() { return clientState; }
 
     @Override public ClientEventService clientEvents() { return clientEvents; }
+
+    @Override public dev.luxloader.api.presentation.PresentationService presentations() {
+        return new dev.luxloader.api.presentation.PresentationService() {
+            private dev.luxloader.api.presentation.PresentationService delegate() {
+                return runtime == null ? dev.luxloader.api.presentation.PresentationService.UNAVAILABLE
+                        : runtime.presentations(instanceToken, ownerPluginId());
+            }
+            public Registration register(Definition definition) {
+                requireActive();
+                var registration = delegate().register(definition);
+                if (!active.get()) { registration.close(); requireActive(); }
+                return registration;
+            }
+            public Capabilities capabilities() { return active.get() ? delegate().capabilities() : Capabilities.UNAVAILABLE; }
+            public Subscription observeHostSounds(java.util.function.Consumer<SoundBatch> listener) {
+                requireActive();
+                var subscription = delegate().observeHostSounds(listener);
+                if (!active.get()) { subscription.close(); requireActive(); }
+                return subscription;
+            }
+        };
+    }
 
     private ClientStateService guardedClientState(ClientStateService delegate) {
         if (delegate == null || delegate == ClientStateService.EMPTY) return ClientStateService.EMPTY;

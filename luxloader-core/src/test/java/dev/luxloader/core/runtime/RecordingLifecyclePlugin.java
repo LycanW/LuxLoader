@@ -53,6 +53,8 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
     public static volatile boolean subscribeToClientStateOnLoad;
     /** Registers an event subscription without cancelling it manually to verify owner cleanup. */
     public static volatile boolean subscribeToClientEventsOnLoad;
+    /** Metadata and a queued output used to verify partial-load presentation cleanup. */
+    public static volatile boolean presentationOnLoad;
 
     /**
      * Rendezvous for tests that must observe or extend the plugin's registrations while its onLoad is
@@ -108,6 +110,7 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
         deregisterContributorOnLoad = false;
         subscribeToClientStateOnLoad = false;
         subscribeToClientEventsOnLoad = false;
+        presentationOnLoad = false;
         releaseLoadRendezvous();
         clearLoadRendezvous();
     }
@@ -132,6 +135,8 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
     private final java.util.List<ClientStateBatch> clientStateBatches = new java.util.concurrent.CopyOnWriteArrayList<>();
     private ClientEventSubscription clientEventSubscription;
     private final java.util.List<ClientEventBatch> clientEventBatches = new java.util.concurrent.CopyOnWriteArrayList<>();
+    public dev.luxloader.api.presentation.PresentationService.Registration presentationRegistration;
+    public dev.luxloader.api.presentation.PresentationService.Handle presentationHandle;
 
     public RecordingLifecyclePlugin() {
         instanceId = ID.namespace() + ":" + ID.path() + "/instance-" + INSTANCE_SEQUENCE.incrementAndGet();
@@ -243,6 +248,15 @@ public final class RecordingLifecyclePlugin implements PipelinePlugin {
         this.bootstrap = bootstrap;
         this.host = bootstrap.host();
         loadCount.incrementAndGet();
+        if (presentationOnLoad) {
+            presentationRegistration = host.presentations().register(new dev.luxloader.api.presentation.PresentationService.Definition(
+                    pluginId.child("presentation"), null, new dev.luxloader.api.presentation.SoundAsset.HostEvent(
+                    new dev.luxloader.api.resource.ResourceKey("minecraft", "entity.player.splash")),
+                    dev.luxloader.api.presentation.PresentationService.Category.PLAYERS, false));
+            presentationHandle = presentationRegistration.start(new dev.luxloader.api.presentation.PresentationService.Request(
+                    new dev.luxloader.api.state.ClientStateSnapshot.WorldSession(1, true, "minecraft:overworld"),
+                    0, 1_000_000_000L, dev.luxloader.api.presentation.PresentationService.Parameters.at(0, 64, 0)));
+        }
         if (subscribeToClientStateOnLoad) {
             clientStateSubscription = host.clientState().subscribe(clientStateBatches::add);
         }

@@ -216,6 +216,11 @@ public final class ClientStateHub {
         }
     }
 
+    /** Current shared logic clock for output scheduling, even when the retained sample is older. */
+    ClientStateSnapshot.LogicalTime logicalTime() {
+        synchronized (lock) { return logicalTimeLocked(lastPaused); }
+    }
+
     Metrics metrics() {
         synchronized (lock) {
             return new Metrics(subscriptions.size(), pending.size(), queuePeak, queueOverflowCount,

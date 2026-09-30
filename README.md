@@ -4,7 +4,7 @@ A programmable rendering and resource pipeline framework for Minecraft Java 26.3
 
 ## Development status
 
-LuxLoader is experimental and under active development. The SDK and plugin contracts are not frozen; build plugins against matching SDK artifacts. The current milestone includes plugin lifecycle and ownership cleanup, capability rollback isolation, render observation, staged GPU uploads and the plugin development guide. Game-state subscriptions and a standalone development workbench are planned work.
+LuxLoader is experimental and under active development. The SDK and plugin contracts are not frozen; build plugins against matching SDK artifacts. The current milestone includes plugin instance ownership, client state and events, bounded resource preparation, render observation and staged GPU uploads. Temporary world presentations now share the logical clock and route admitted visual geometry through the active pipeline, with optional Minecraft sound playback. A standalone development workbench remains planned work.
 
 The primary development environment is Windows with JDK 25 and Vulkan. Fabric and NeoForge integrations are included, but successful compilation does not establish equivalent runtime behavior on every platform or GPU.
 
@@ -90,6 +90,8 @@ Large buffer update batches use reusable, persistently mapped staging pages and 
 An explicit CPU recording benchmark is available with `.\gradlew :luxloader-core:test --tests '*VulkanUploadBenchmarkGpuTest' "-Dluxloader.test.gpuPipeline=true" "-Dluxloader.test.uploadBenchmark=true"`. It measures repeated 32 MiB batches with GPU completion outside the timed region; its results are not whole-frame timings.
 
 ## Language and verification
+
+`HostServices.presentations()` registers metadata without producing output. An explicit request owns one temporary instance with a world session, start time, lifetime and coalesced parameters for visual and audio consumers. The active pipeline must declare supported visual type IDs and consume dynamic geometry. Sound assets can name a host event, a host OGG resource or immutable plugin-prepared OGG bytes. Host request results and channel activity do not prove device audibility. See [temporary world presentations](PLUGIN_DEVELOPMENT.md#temporary-world-presentations) for lifecycle, capability, source filtering and safety limits. The core and actual Minecraft sound bridge have CPU/offline tests; the independent presentation demo and in-game visual/audio acceptance remain separate work.
 
 Source comments, committed documentation and future commit messages use English. UI and migrated diagnostic messages select English or Chinese from the Minecraft language setting. Outside Minecraft, `-Dluxloader.language=en` or `zh` overrides the system locale; unsupported languages fall back to English. Local research and verification notes under ignored `docs/` remain Chinese.
 

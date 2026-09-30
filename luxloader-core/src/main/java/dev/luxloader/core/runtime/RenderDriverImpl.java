@@ -144,6 +144,8 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
     private final ClientStateHub clientStateHub;
     private final ClientEventHub clientEventHub;
     private final ResourcePreparationHub resourcePreparationHub;
+    private final PresentationHub presentationHub;
+    private boolean presentationMetricsPublished;
 
     private final List<PipelinePlugin> plugins = new ArrayList<>();
     private final Map<String, HostServicesImpl> hostServices = new LinkedHashMap<>();
@@ -264,15 +266,23 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
      * layout
      */
     public RenderDriverImpl(Path configDirectory, Path contentDirectory) {
+        this(configDirectory, contentDirectory, System::nanoTime);
+    }
+
+    /** Deterministic shared clock for CPU contract verification. */
+    RenderDriverImpl(Path configDirectory, Path contentDirectory, java.util.function.LongSupplier clock) {
         this.configDirectory = configDirectory.toAbsolutePath();
         this.contentDirectory = contentDirectory != null
                 ? contentDirectory.toAbsolutePath()
                 : inferContentDirectory(this.configDirectory);
-        this.clientStateHub = new ClientStateHub(System::nanoTime,
+        this.clientStateHub = new ClientStateHub(clock,
                 ClientStateHub.DEFAULT_QUEUE_CAPACITY, this::reportClientStateListenerFailure);
         this.clientEventHub = new ClientEventHub(ClientEventHub.DEFAULT_QUEUE_CAPACITY,
                 this::reportClientEventListenerFailure);
         this.resourcePreparationHub = new ResourcePreparationHub(this::resources);
+        this.presentationHub = new PresentationHub(error -> {
+            if (diagnostics != null) diagnostics.warn(tr("Presentation processing failed: ") + error);
+        });
     }
 
     private void reportClientStateListenerFailure(Throwable error) {
@@ -340,6 +350,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
         diagnostics.info((enabled ? tr("Enabled") : tr("Disabled")) + tr("Pipeline ") + key);
         // Update UI state immediately instead of waiting for automatic selection.
         if (!enabled) {
+            if (id.equals(activePipelineId)) presentationHub.stopPipeline();
             HostServicesImpl.Registration registration = registrations.get(id);
             if (registration != null && !id.equals(activePipelineId)) {
                 updateState(id, PipelineInfo.State.DISABLED,
@@ -1074,6 +1085,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
 
             this.activePipeline = pipeline;
             this.activePipelineId = id;
+            presentationHub.pipelineActivated(pipeline);
             this.consecutiveFrameFailures = 0;
             updateState(id, PipelineInfo.State.ACTIVE, reason);
             diagnostics.info(tr("Pipeline activated: ") + registration.descriptor().describe());
@@ -1121,6 +1133,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
      * cleanup there remain dependent on a correctly installed release hook.
      */
     private void abandonGpuObjects() {
+        presentationHub.stopPipeline();
         resourcePreparationHub.closeScopes();
         activePipeline = null;
         activePipelineId = null;
@@ -1129,6 +1142,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
 
     /** Closes the active pipeline and releases its scoped resources. */
     private void teardownActivePipeline() {
+        presentationHub.stopPipeline();
         resourcePreparationHub.closeScopes();
         if (activePipeline != null) {
             try {
@@ -1699,6 +1713,7 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
             }
         } finally {
             // Always close the heartbeat handle so Windows permits truncation on the next run.
+            presentationHub.close();
             resourcePreparationHub.close();
             closeHeartbeat();
         }
@@ -2181,6 +2196,17 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
         resourcePreparationHub.releaseOwner(ownerInstanceToken);
     }
 
+    @Override public dev.luxloader.api.presentation.PresentationService presentations(long ownerInstanceToken, String pluginId) {
+        return presentationHub.service(ownerInstanceToken, pluginId);
+    }
+
+    @Override public void releasePresentationOwner(long ownerInstanceToken) { presentationHub.releaseOwner(ownerInstanceToken); }
+
+    /** Attach host sound services independently of Vulkan device/scene adapter readiness. */
+    public void attachSoundBackend(dev.luxloader.api.host.HostSoundBackend backend) { presentationHub.attach(backend); }
+
+    public boolean hasHostSoundObservers() { return initialized.get() && presentationHub.hasHostSoundObservers(); }
+
     @Override
     public ClientStateService clientState(long ownerInstanceToken) {
         return clientStateHub.serviceForOwner(ownerInstanceToken);
@@ -2209,14 +2235,14 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
     /** Whether the safe point needs to capture an initial or session-boundary sample. */
     public boolean needsClientStateSnapshot() {
         return initialized.get() && (clientStateHub.needsInitialSnapshot()
-                || (clientEventHub.hasSubscribers() && clientStateHub.current().isEmpty()));
+                || ((clientEventHub.hasSubscribers() || presentationHub.needsState()) && clientStateHub.current().isEmpty()));
     }
 
     /** Capture immutable facts only; plugin callbacks are deferred to the matching safe point. */
     public void observeClientStateTick(boolean paused,
             BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
         if (initialized.get()) clientStateHub.clientTick(paused, snapshotFactory,
-                clientEventHub.hasSubscribers());
+                clientEventHub.hasSubscribers() || presentationHub.needsState());
     }
 
     /** Observe the session/pause boundary and dispatch queued batches on the client update thread. */
@@ -2224,9 +2250,20 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
             BiFunction<Long, ClientStateSnapshot.LogicalTime, ClientStateSnapshot> snapshotFactory) {
         if (!initialized.get()) return;
         resourcePreparationHub.worldSession(sessionGeneration);
+        boolean outputDemand = presentationHub.needsState();
         boolean eventDemand = clientEventHub.hasSubscribers();
-        clientStateHub.safePoint(paused, sessionGeneration, snapshotFactory, eventDemand);
+        clientStateHub.safePoint(paused, sessionGeneration, snapshotFactory, eventDemand || outputDemand);
         clientEventHub.safePoint(clientStateHub.current().orElse(null), clientStateHub.captureFailureEpoch());
+        if (outputDemand || presentationHub.needsState()) {
+            dev.luxloader.api.resource.ResourceState resourceState;
+            try { resourceState = java.util.Objects.requireNonNull(resources().state()); }
+            catch (RuntimeException | LinkageError e) {
+                if (diagnostics != null) diagnostics.warn(tr("Presentation processing failed: ") + e);
+                resourceState = new dev.luxloader.api.resource.ResourceState(-1, dev.luxloader.api.resource.ResourceState.Phase.FAILED);
+            }
+            presentationHub.safePoint(clientStateHub.current().orElse(null), clientStateHub.logicalTime(),
+                    sessionGeneration, resourceState, presentationPipeline());
+        }
     }
 
     /** Whether an injected Minecraft behavior source should copy any event fields. */
@@ -2295,6 +2332,19 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
             diagnostics.metric("resources.bytes.decoded", resourceMetrics.decodedBytes(), "bytes");
             diagnostics.metric("resources.bytes.decoded-peak", resourceMetrics.peakDecodedBytes(), "bytes");
             diagnostics.metric("resources.bytes.input-peak", resourceMetrics.peakInputBytes(), "bytes");
+            if (presentationHub.needsState() || presentationMetricsPublished) {
+                var presentationMetrics = presentationHub.metrics();
+                diagnostics.metric("presentations.registrations", presentationMetrics.registrations(), "types");
+                diagnostics.metric("presentations.handles", presentationMetrics.handles(), "instances");
+                diagnostics.metric("presentations.observers", presentationMetrics.observers(), "subscriptions");
+                diagnostics.metric("presentations.handles.peak", presentationMetrics.peakHandles(), "instances");
+                diagnostics.metric("presentations.rejected", presentationMetrics.rejected(), "requests");
+                diagnostics.metric("presentations.starts", presentationMetrics.starts(), "instances");
+                diagnostics.metric("presentations.visual-calls", presentationMetrics.visualCalls(), "calls");
+                diagnostics.metric("presentations.asset-bytes", presentationMetrics.assetBytes(), "bytes");
+                diagnostics.metric("presentations.sound-queued", presentationMetrics.soundQueued(), "requests");
+                presentationMetricsPublished = presentationMetrics.handles() > 0 || presentationMetrics.observers() > 0;
+            }
             if (hostAdapter != null && activePipeline != null) {
                 long revision = hostAdapter.resources().revision();
                 if (revision != sceneResourceRevision) {
@@ -2361,6 +2411,8 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
             java.util.List<dev.luxloader.api.scene.DynamicSceneMesh> hostDynamicMeshes) {
         java.util.List<dev.luxloader.api.scene.DynamicSceneMesh> merged =
                 new java.util.ArrayList<>(hostDynamicMeshes);
+        var temporary = presentationHub.contribute(hostScene, presentationPipeline());
+        if (!temporary.isEmpty()) merged.addAll(temporary);
         if (sceneContributors.isEmpty()) {
             return merged;
         }
@@ -2418,6 +2470,10 @@ public final class RenderDriverImpl implements RenderDriver, HostServicesImpl.Ru
 
     /** Upper bound on contributor rebuild passes within one merge, to bound pathological churn. */
     private static final int MAX_CONTRIBUTOR_PASSES = 2;
+
+    private RenderPipeline presentationPipeline() {
+        return activePipelineId == null || userDisabledPipelines.contains(activePipelineId.toString()) ? null : activePipeline;
+    }
 
     /** Reports a contributor failure once, so a broken contributor cannot flood the log every frame. */
     private void reportSceneContributionFailure(GpuId id, String ownerPluginId, Throwable cause) {

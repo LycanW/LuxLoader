@@ -45,6 +45,7 @@ class ResourceOwnerCleanupTest {
                                 throw new IllegalStateException("Broken resource cleanup");
                             }
                             case "releaseClientStateOwner" -> { calls.add("state"); yield null; }
+                            case "releasePresentationOwner" -> null;
                             case "releaseClientEventsOwner" -> { calls.add("events"); yield null; }
                             default -> throw new AssertionError(method.getName());
                         };

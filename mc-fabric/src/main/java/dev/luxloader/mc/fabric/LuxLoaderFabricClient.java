@@ -49,6 +49,7 @@ public final class LuxLoaderFabricClient implements ClientModInitializer, Render
     private static MinecraftBehaviorEventAccess behaviorEventAccess;
     private static boolean clientStateAccessWarningLogged;
     private static boolean behaviorEventAccessWarningLogged;
+    private static boolean soundBackendAttached;
     private static boolean vulkanBackend;
     private static String gameVersion = "";
 
@@ -92,6 +93,10 @@ public final class LuxLoaderFabricClient implements ClientModInitializer, Render
         try {
             MinecraftClientStateAccess access = clientStateAccess(minecraft);
             long sessionGeneration = access.observeSessionGeneration(minecraft);
+            if (!soundBackendAttached) {
+                current.attachSoundBackend(new dev.luxloader.mc.hooks.MinecraftSoundBackend((net.minecraft.client.Minecraft)minecraft));
+                soundBackendAttached = true;
+            }
             current.observeClientStateSafePoint(access.isPaused(minecraft), sessionGeneration,
                     (sequence, time) -> sample(access, minecraft, sequence, time));
             boolean eventDemand = current.hasClientEventSubscribers();

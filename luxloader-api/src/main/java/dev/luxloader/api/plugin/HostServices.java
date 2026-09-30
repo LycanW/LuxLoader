@@ -72,6 +72,11 @@ public interface HostServices {
         return ClientEventService.EMPTY;
     }
 
+    /** World presentations owned by this exact loaded plugin instance; unavailable on older hosts. */
+    default dev.luxloader.api.presentation.PresentationService presentations() {
+        return dev.luxloader.api.presentation.PresentationService.UNAVAILABLE;
+    }
+
     /** Plugin metadata. */
     LuxMod mod();
 

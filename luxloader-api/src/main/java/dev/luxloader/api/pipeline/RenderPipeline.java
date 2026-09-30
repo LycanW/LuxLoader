@@ -41,6 +41,14 @@ public interface RenderPipeline extends AutoCloseable {
     default boolean requiresDynamicGeometry() { return false; }
 
     /**
+     * Presentation definition IDs this pipeline actually consumes as dynamic scene meshes. Empty by
+     * default. Opting in also requires requiresDynamicGeometry(), and the pipeline must draw/use the
+     * supplied meshes. Submission/contribution does not assert visible pixels. Contributors use their
+     * instance source to keep mesh IDs distinct; GPU retirement still waits for frame completion.
+     */
+    default java.util.Set<dev.luxloader.api.GpuId> presentationVisualTypes() { return java.util.Set.of(); }
+
+    /**
      * Whether compatibility preparation includes the host's projected entity-shadow
      * decals. A pipeline supplying its own shadows can opt out before these meshes
      * are built, drawn, or offered as secondary geometry. Queried without GPU work.
